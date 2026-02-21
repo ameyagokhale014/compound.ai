@@ -1,0 +1,18 @@
+[project]
+name = "portfolio-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "apscheduler>=3.11.2",
+    "feedparser>=6.0.12",
+    "openai>=2.21.0",
+    "pandas>=2.3.3",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+    "sqlalchemy>=2.0.46",
+    "streamlit>=1.54.0",
+    "yfinance>=1.1.0",
+]
