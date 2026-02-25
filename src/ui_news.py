@@ -50,23 +50,29 @@ def _nonempty_str(x) -> str:
 # Google News RSS (no API key)
 # -----------------------------
 def _google_news_rss_url(query: str) -> str:
-    # Google News RSS Search endpoint (free, no key)
-    # Example format documented widely:
-    # https://news.google.com/rss/search?q=NVDA%20stock&hl=en-US&gl=US&ceid=US:en
     q = quote_plus(query)
     return f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
 
 
-def _fetch_google_news(ticker: str, max_items: int = 8) -> list[dict]:
+def _fetch_google_news(
+    ticker: str,
+    other_tickers: list[str] | None = None,
+    max_items: int = 8,
+) -> list[dict]:
     """
     Returns items like:
       {"title": "...", "link": "...", "publisher": "...", "date": "..."}
+    Uses a stricter query + excludes other portfolio tickers to reduce cross-contamination.
     """
     t = ticker.upper().strip()
+    other_tickers = [x.upper().strip() for x in (other_tickers or []) if x and x.upper().strip() != t]
 
-    # Make the query more ticker-specific to reduce cross-contamination
-    # (Still free-form search, but much better than yfinance.news)
-    query = f'{t} stock'
+    # Tight query:
+    # - force ticker mention
+    # - include stock-related terms
+    # - exclude other portfolio tickers (helps a lot when mega-caps dominate headlines)
+    exclude = " ".join([f"-{x}" for x in other_tickers[:12]])  # cap exclusions to keep URL reasonable
+    query = f'"{t}" (stock OR shares OR earnings OR guidance OR forecast OR revenue OR profit) {exclude}'.strip()
 
     url = _google_news_rss_url(query)
 
@@ -75,7 +81,7 @@ def _fetch_google_news(ticker: str, max_items: int = 8) -> list[dict]:
             url,
             timeout=10,
             headers={
-                "User-Agent": "compoundai/1.0 (news; contact: local)",
+                "User-Agent": "compoundai/1.0 (news; local)",
                 "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
             },
         )
@@ -88,7 +94,6 @@ def _fetch_google_news(ticker: str, max_items: int = 8) -> list[dict]:
     except Exception:
         return []
 
-    # RSS structure: <rss><channel><item>...
     channel = root.find("channel")
     if channel is None:
         return []
@@ -99,7 +104,6 @@ def _fetch_google_news(ticker: str, max_items: int = 8) -> list[dict]:
         link = _nonempty_str(item.findtext("link"))
         pub_date = _nonempty_str(item.findtext("pubDate"))
 
-        # Google News includes source in <source>
         source_el = item.find("source")
         publisher = _nonempty_str(source_el.text if source_el is not None else "")
 
@@ -171,13 +175,14 @@ def render_news_tab():
     total_mv = float(mvdf["Market Value"].sum()) if not mvdf.empty else 0.0
     mvdf["% of Portfolio"] = (mvdf["Market Value"] / total_mv * 100.0) if total_mv > 0 else 0.0
 
-    # Render per STOCK (skip cash)
-    # Render per STOCK (skip cash) — sorted by weight descending
+    # Render per STOCK (skip cash) — sorted by weight desc
     stock_rows = mvdf[mvdf["Ticker"].astype(str).str.upper().str.strip() != "CASH"].copy()
     stock_rows["% of Portfolio"] = pd.to_numeric(stock_rows["% of Portfolio"], errors="coerce").fillna(0.0)
-
     stock_rows = stock_rows.sort_values("% of Portfolio", ascending=False)
     tickers = stock_rows["Ticker"].astype(str).tolist()
+
+    # For better per-stock news relevance: exclude other portfolio tickers
+    all_portfolio_tickers = [x.upper().strip() for x in tickers if x]
 
     for t in tickers:
         row = mvdf[mvdf["Ticker"] == t]
@@ -203,7 +208,8 @@ def render_news_tab():
 
         # Recent news (GOOGLE NEWS RSS)
         st.markdown("**Recent news that might affect price**")
-        news_items = _fetch_google_news(t, max_items=8)
+        other = [x for x in all_portfolio_tickers if x != t]
+        news_items = _fetch_google_news(t, other_tickers=other, max_items=8)
 
         if news_items:
             lines = []
@@ -241,9 +247,18 @@ def render_news_tab():
                     ),
                 )
                 st.write(summary)
+
             except LLMError as e:
-                st.warning(str(e))
+                # Make the action item explicit
+                st.warning(
+                    f"{e}\n\n"
+                    "If this is an Ollama 404/model-not-found error: run `ollama list` and update your model name "
+                    "in `src/llm.py` (or pull one: `ollama pull llama3.1`)."
+                )
             except Exception as e:
-                st.warning(f"LLM summary failed: {e}")
+                st.warning(
+                    f"LLM summary failed: {e}\n\n"
+                    "If you see HTTP 404 from Ollama, your endpoint or model name in `src/llm.py` is wrong."
+                )
 
         st.divider()

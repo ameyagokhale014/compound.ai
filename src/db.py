@@ -4,6 +4,7 @@ ENGINE = create_engine("sqlite:///portfolio.db", future=True)
 
 def init_db():
     with ENGINE.begin() as conn:
+        # Existing Tables
         conn.execute(text("""
         CREATE TABLE IF NOT EXISTS positions (
             ticker TEXT PRIMARY KEY,
@@ -70,3 +71,35 @@ def init_db():
             assumptions TEXT
         );
         """))
+
+        # ✅ NEW: Real Estate Table
+        conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS real_estate (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            address TEXT NOT NULL,
+            purchase_price REAL NOT NULL,
+            downpayment_pct REAL NOT NULL,
+            parcel_number TEXT
+        );
+        """))
+
+# --- Helper functions for Real Estate ---
+
+def add_property(address: str, purchase_price: float, downpayment_pct: float, parcel: str = ""):
+    """Inserts a new property record."""
+    with ENGINE.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO real_estate (address, purchase_price, downpayment_pct, parcel_number)
+            VALUES (:addr, :price, :dp, :parcel)
+        """), {"addr": address, "price": purchase_price, "dp": downpayment_pct, "parcel": parcel})
+
+def get_properties():
+    """Retrieves all property records."""
+    with ENGINE.connect() as conn:
+        result = conn.execute(text("SELECT id, address, purchase_price, downpayment_pct, parcel_number FROM real_estate"))
+        return result.fetchall()
+    
+def delete_property(prop_id: int):
+    """Removes a property record by ID."""
+    with ENGINE.begin() as conn:
+        conn.execute(text("DELETE FROM real_estate WHERE id = :id"), {"id": prop_id})
