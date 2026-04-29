@@ -171,20 +171,24 @@ export default function HoldingsTable({ holdings, totalPortfolioValue, onAddBuy,
                     </span>
                   </div>
                   <div className="text-[#8a8a8a] text-xs truncate">{h.name}</div>
-                  {/* Current price row */}
+                  {/* Price row — shows extended price as primary when in pre/post market */}
                   {h.current_price > 0 && (
                     <div className="flex items-center gap-2 mt-0.5">
                       <span className="text-white text-sm font-semibold tabular-nums">
-                        {fmt(h.current_price)}
+                        {isExtended && ext ? fmt(ext.price) : fmt(h.current_price)}
                       </span>
-                      {h.total_quantity > 0 && (
+                      {isExtended && ext ? (
+                        <span className={`text-xs ${extUp ? "text-[#00c805]" : "text-[#ff5000]"}`}>
+                          {extUp ? "+" : ""}{ext.change_pct.toFixed(2)}%
+                        </span>
+                      ) : h.total_quantity > 0 && (
                         <span className="text-[#444] text-[10px]">
                           avg {fmt(h.total_cost / h.total_quantity)}
                         </span>
                       )}
                     </div>
                   )}
-                  {/* Extended-hours price line */}
+                  {/* Extended-hours session badge + regular close reference */}
                   {isExtended && ext && (
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
@@ -194,11 +198,8 @@ export default function HoldingsTable({ holdings, totalPortfolioValue, onAddBuy,
                       }`}>
                         {extLabel}
                       </span>
-                      <span className="text-white text-xs font-semibold tabular-nums">
-                        {fmt(ext.price)}
-                      </span>
-                      <span className={`text-xs ${extUp ? "text-[#00c805]" : "text-[#ff5000]"}`}>
-                        {extUp ? "+" : ""}{fmt(ext.change)} ({extUp ? "+" : ""}{ext.change_pct.toFixed(2)}%)
+                      <span className="text-[#555] text-[10px]">
+                        close {fmt(ext.reg_close ?? h.current_price)}
                       </span>
                     </div>
                   )}
@@ -223,9 +224,11 @@ export default function HoldingsTable({ holdings, totalPortfolioValue, onAddBuy,
                   )}
                 </div>
 
-                {/* Value */}
+                {/* Value — uses extended price when available */}
                 <div className="text-right ml-4 w-28">
-                  <div className="text-white text-sm font-medium">{fmt(h.current_value)}</div>
+                  <div className="text-white text-sm font-medium">
+                    {isExtended && ext ? fmt(ext.price * h.total_quantity) : fmt(h.current_value)}
+                  </div>
                   <div className="text-[#8a8a8a] text-xs">{fmtNum(h.total_quantity)} sh</div>
                 </div>
 

@@ -40,7 +40,30 @@ export default function PortfolioDetail({ portfolio, onBack, onUpdate, onViewSto
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState(portfolio.name);
 
-  const isUp = portfolio.total_gain_loss >= 0;
+  // Recalculate totals using extended prices when in pre/post market
+  const { adjTotalValue, adjGainLoss, adjGainLossPct } = useMemo(() => {
+    const useExt = session === "pre_market" || session === "post_market";
+    if (!useExt) {
+      return {
+        adjTotalValue: portfolio.total_value,
+        adjGainLoss: portfolio.total_gain_loss,
+        adjGainLossPct: portfolio.total_gain_loss_pct,
+      };
+    }
+    let investedValue = 0;
+    let totalCostCalc = 0;
+    for (const h of portfolio.holdings) {
+      const ext = extendedPrices[h.symbol];
+      investedValue += ext ? ext.price * h.total_quantity : h.current_value;
+      totalCostCalc += h.total_cost;
+    }
+    const total = investedValue + portfolio.cash_balance;
+    const gl = investedValue - totalCostCalc;
+    const glPct = totalCostCalc > 0 ? (gl / totalCostCalc) * 100 : 0;
+    return { adjTotalValue: total, adjGainLoss: gl, adjGainLossPct: glPct };
+  }, [portfolio, extendedPrices, session]);
+
+  const isUp = adjGainLoss >= 0;
 
   const stockSymbols = useMemo(
     () => portfolio.holdings.filter((h) => h.asset_type !== "cash").map((h) => h.symbol),
@@ -195,14 +218,14 @@ export default function PortfolioDetail({ portfolio, onBack, onUpdate, onViewSto
             {/* Summary row */}
             {(() => {
               const todayValue = portfolio.holdings.reduce((s, h) => s + h.day_change_value, 0);
-              const prevTotal = portfolio.total_value - todayValue;
+              const prevTotal = adjTotalValue - todayValue;
               const todayPct = prevTotal > 0 ? (todayValue / prevTotal) * 100 : 0;
               const todayUp = todayValue >= 0;
               return (
                 <div className="grid grid-cols-4 gap-3">
                   <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-4">
                     <div className="text-[#8a8a8a] text-xs mb-1">Total Value</div>
-                    <div className="text-white font-semibold">{fmt(portfolio.total_value)}</div>
+                    <div className="text-white font-semibold">{fmt(adjTotalValue)}</div>
                   </div>
                   <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-4">
                     <div className="text-[#8a8a8a] text-xs mb-1">Today's Return</div>
@@ -216,18 +239,18 @@ export default function PortfolioDetail({ portfolio, onBack, onUpdate, onViewSto
                   <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-4">
                     <div className="text-[#8a8a8a] text-xs mb-1">Total Return</div>
                     <div className={`font-semibold ${isUp ? "text-[#00c805]" : "text-[#ff5000]"}`}>
-                      {isUp ? "+" : ""}{fmt(portfolio.total_gain_loss)}
+                      {isUp ? "+" : ""}{fmt(adjGainLoss)}
                     </div>
                     <div className={`text-xs mt-0.5 ${isUp ? "text-[#00c805]" : "text-[#ff5000]"}`}>
-                      {isUp ? "+" : ""}{portfolio.total_gain_loss_pct.toFixed(2)}%
+                      {isUp ? "+" : ""}{adjGainLossPct.toFixed(2)}%
                     </div>
                   </div>
                   <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-4">
                     <div className="text-[#8a8a8a] text-xs mb-1">Cash</div>
                     <div className="text-white font-semibold">{fmt(portfolio.cash_balance)}</div>
-                    {portfolio.total_value > 0 && (
+                    {adjTotalValue > 0 && (
                       <div className="text-[#8a8a8a] text-xs mt-0.5">
-                        {((portfolio.cash_balance / portfolio.total_value) * 100).toFixed(1)}% of portfolio
+                        {((portfolio.cash_balance / adjTotalValue) * 100).toFixed(1)}% of portfolio
                       </div>
                     )}
                   </div>

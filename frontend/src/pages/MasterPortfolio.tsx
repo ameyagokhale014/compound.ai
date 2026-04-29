@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Portfolio, RealEstateProperty } from "../types";
+import type { ExtendedPrice } from "../hooks/useWebSocket";
 import { useBuyTargets } from "../hooks/useBuyTargets";
 import PopiStocks from "../components/PopiStocks";
 import TotalChart from "../components/TotalChart";
@@ -11,6 +12,8 @@ interface Props {
   portfolios: Portfolio[];
   properties: RealEstateProperty[];
   onViewStock?: (symbol: string) => void;
+  extendedPrices?: Record<string, ExtendedPrice>;
+  session?: string;
 }
 
 interface AggHolding {
@@ -57,13 +60,14 @@ function fmtQty(n: number) {
   return n.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
-export default function MasterPortfolio({ portfolios, properties, onViewStock }: Props) {
+export default function MasterPortfolio({ portfolios, properties, onViewStock, extendedPrices = {}, session = "closed" }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("value");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const { aggHoldings, totalCash, totalInvested, totalCost, totalGainLoss, totalGainLossPct, totalDayChange, totalDayChangePct, virtualPortfolio } = useMemo(() => {
     const map = new Map<string, AggHolding>();
     let totalCash = 0;
+    const useExt = session === "pre_market" || session === "post_market";
 
     for (const p of portfolios) {
       totalCash += p.cash_balance;
@@ -96,14 +100,23 @@ export default function MasterPortfolio({ portfolios, properties, onViewStock }:
       }
     }
 
-    const holdings = Array.from(map.values()).map((h) => ({
-      ...h,
-      avg_cost: h.total_quantity > 0 ? h.total_cost / h.total_quantity : 0,
-      current_price: h.total_quantity > 0 ? h.current_value / h.total_quantity : 0,
-      gain_loss_pct: h.total_cost > 0 ? (h.gain_loss / h.total_cost) * 100 : 0,
-      day_change_pct: (h.current_value - h.day_change_value) > 0
-        ? (h.day_change_value / (h.current_value - h.day_change_value)) * 100 : 0,
-    }));
+    const holdings = Array.from(map.values()).map((h) => {
+      const ext = useExt ? extendedPrices[h.symbol] : undefined;
+      const extPrice = ext ? ext.price : null;
+      const currentPrice = extPrice ?? (h.total_quantity > 0 ? h.current_value / h.total_quantity : 0);
+      const currentValue = extPrice != null ? extPrice * h.total_quantity : h.current_value;
+      const gainLoss = currentValue - h.total_cost;
+      return {
+        ...h,
+        avg_cost: h.total_quantity > 0 ? h.total_cost / h.total_quantity : 0,
+        current_price: currentPrice,
+        current_value: currentValue,
+        gain_loss: gainLoss,
+        gain_loss_pct: h.total_cost > 0 ? (gainLoss / h.total_cost) * 100 : 0,
+        day_change_pct: (h.current_value - h.day_change_value) > 0
+          ? (h.day_change_value / (h.current_value - h.day_change_value)) * 100 : 0,
+      };
+    });
 
     const totalInvested = holdings.reduce((s, h) => s + h.current_value, 0);
     const totalCost2 = holdings.reduce((s, h) => s + h.total_cost, 0);
@@ -298,6 +311,8 @@ export default function MasterPortfolio({ portfolios, properties, onViewStock }:
                     const dayUp = h.day_change_value >= 0;
                     const bt = buyTargets.get(h.symbol);
                     const signalStyle = bt?.signal ? SIGNAL_STYLE[bt.signal] : null;
+                    const ext = (session === "pre_market" || session === "post_market") ? extendedPrices[h.symbol] : undefined;
+                    const extUp = ext ? ext.change >= 0 : false;
                     return (
                       <div key={h.symbol} className="px-5 py-3 hover:bg-[#1a1a1a] transition-colors">
                         {/* Row layout: flex so it wraps gracefully */}
@@ -315,10 +330,17 @@ export default function MasterPortfolio({ portfolios, properties, onViewStock }:
                               </span>
                             </div>
                             <div className="text-[#555] text-xs truncate">{h.name}</div>
-                            {/* Current price — prominent, its own line */}
+                            {/* Current price — uses ext price when in extended hours */}
                             {h.current_price > 0 && (
-                              <div className="text-white text-sm font-semibold tabular-nums mt-0.5">
-                                {fmt(h.current_price)}
+                              <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                <span className="text-white text-sm font-semibold tabular-nums">
+                                  {fmt(h.current_price)}
+                                </span>
+                                {ext && (
+                                  <span className={`text-[10px] font-medium ${extUp ? "text-[#00c805]" : "text-[#ff5000]"}`}>
+                                    {extUp ? "+" : ""}{ext.change_pct.toFixed(2)}%
+                                  </span>
+                                )}
                               </div>
                             )}
                             {h.portfolio_names.length > 1 && (

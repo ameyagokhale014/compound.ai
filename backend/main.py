@@ -218,6 +218,15 @@ async def _startup_fetch():
             db2.commit()
             await price_poller.broadcast_prices(prices)
             print(f"[startup] fetched {len(prices)} live prices")
+
+            # Also fetch extended prices immediately if in extended hours
+            if price_poller.is_extended_hours():
+                stock_syms = [s for s, t in symbol_map.items() if t != "crypto"]
+                if stock_syms:
+                    ext = await price_poller.fetch_extended_prices(stock_syms)
+                    if ext:
+                        price_poller.extended_prices.update(ext)
+                        print(f"[startup] fetched {len(ext)} extended prices")
     except Exception as e:
         print(f"[startup] live fetch error: {e}")
     finally:
@@ -287,9 +296,14 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     price_poller.connected_clients.add(websocket)
     try:
-        # Send current prices immediately on connect
+        # Send current prices + extended prices immediately on connect
         if price_poller.latest_prices:
-            await websocket.send_json({"type": "price_update", "prices": price_poller.latest_prices})
+            await websocket.send_json({
+                "type":     "price_update",
+                "prices":   price_poller.latest_prices,
+                "extended": price_poller.extended_prices,
+                "session":  price_poller.current_session(),
+            })
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
