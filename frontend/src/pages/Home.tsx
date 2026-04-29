@@ -112,6 +112,18 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
   const nonRetirementCash   = nonRetirementPortfolios.reduce((s, p) => s + p.cash_balance, 0);
   const nonRetirementStocks = nonRetirementValue - nonRetirementCash;
 
+  // Break non-retirement stocks into individual stocks vs ETFs+mutual funds
+  const { nonRetirementIndivStocks, nonRetirementFunds } = useMemo(() => {
+    let indiv = 0, funds = 0;
+    for (const p of nonRetirementPortfolios) {
+      for (const h of p.holdings) {
+        if (h.asset_type === "stock" || h.asset_type === "crypto") indiv += h.current_value;
+        else if (h.asset_type === "etf" || h.asset_type === "mutual_fund") funds += h.current_value;
+      }
+    }
+    return { nonRetirementIndivStocks: indiv, nonRetirementFunds: funds };
+  }, [nonRetirementPortfolios]);
+
   const [sectors, setSectors] = useState<Record<string, string>>({});
 
   const allStockSymbols = useMemo(() => {
@@ -303,10 +315,15 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
                             {totalPortfolio > 0 ? ((nonRetirementValue / totalPortfolio) * 100).toFixed(1) : "0"}%
                           </span>
                         </div>
-                        <div className="flex gap-3 mt-1">
-                          {nonRetirementStocks > 0 && (
+                        <div className="flex gap-3 mt-1 flex-wrap">
+                          {nonRetirementIndivStocks > 0 && (
                             <span className="text-[#555] text-xs">
-                              Stocks <span className="text-[#8a8a8a]">{nonRetirementValue > 0 ? ((nonRetirementStocks / nonRetirementValue) * 100).toFixed(0) : 0}%</span>
+                              Stocks <span className="text-[#8a8a8a]">{nonRetirementValue > 0 ? ((nonRetirementIndivStocks / nonRetirementValue) * 100).toFixed(0) : 0}%</span>
+                            </span>
+                          )}
+                          {nonRetirementFunds > 0 && (
+                            <span className="text-[#555] text-xs">
+                              ETFs/Funds <span className="text-[#4488ff]">{nonRetirementValue > 0 ? ((nonRetirementFunds / nonRetirementValue) * 100).toFixed(0) : 0}%</span>
                             </span>
                           )}
                           {nonRetirementCash > 0 && (
