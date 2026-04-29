@@ -298,4 +298,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "market_open": price_poller.is_market_open()}
+    return {
+        "status": "ok",
+        "market_open":   price_poller.is_market_open(),
+        "extended_hours": price_poller.is_extended_hours(),
+        "session":        price_poller.current_session(),
+    }

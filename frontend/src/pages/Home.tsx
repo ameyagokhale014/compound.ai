@@ -3,6 +3,7 @@ import { Plus, Trash2, TrendingUp, TrendingDown, Zap } from "lucide-react";
 import { getPortfolios, createPortfolio, deletePortfolio, getRealEstate, getStockSectors, getRecentEarningsSummaries } from "../api";
 import type { Portfolio, RealEstateProperty, RecentEarningsSummary } from "../api";
 import type { Portfolio as PortfolioType, RealEstateProperty as REType } from "../types";
+import type { ExtendedPrice } from "../hooks/useWebSocket";
 import { useBuyTargets } from "../hooks/useBuyTargets";
 import AllocationChart from "../components/AllocationChart";
 import RealEstatePanel from "../components/RealEstatePanel";
@@ -15,6 +16,8 @@ import { computeWealthScore } from "../utils/wealthScore";
 interface Props {
   onSelect: (p: PortfolioType) => void;
   prices: Record<string, number>;
+  extendedPrices?: Record<string, ExtendedPrice>;
+  session?: string;
   onViewStock?: (symbol: string) => void;
 }
 
@@ -26,7 +29,7 @@ function fmtFull(n: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-export default function Home({ onSelect, prices, onViewStock }: Props) {
+export default function Home({ onSelect, prices, extendedPrices = {}, session = "closed", onViewStock }: Props) {
   const [portfolios, setPortfolios] = useState<PortfolioType[]>([]);
   const [properties, setProperties] = useState<REType[]>([]);
   const [earningsPulse, setEarningsPulse] = useState<RecentEarningsSummary[]>([]);
@@ -501,6 +504,20 @@ export default function Home({ onSelect, prices, onViewStock }: Props) {
                 const pPrevTotal = p.total_value - pTodayVal;
                 const pTodayPct = pPrevTotal > 0 ? (pTodayVal / pPrevTotal) * 100 : 0;
                 const pTodayUp = pTodayVal >= 0;
+
+                // Extended-hours: sum change_pct weighted by position value
+                const isExtended = session === "pre_market" || session === "post_market";
+                const extLabel = session === "pre_market" ? "Pre-Mkt" : "After Hrs";
+                const extSymbol = session === "pre_market" ? "🌅" : "🌙";
+                let extChangeVal = 0;
+                if (isExtended) {
+                  for (const h of p.holdings) {
+                    const ext = extendedPrices[h.symbol];
+                    if (ext) extChangeVal += ext.change * h.total_quantity;
+                  }
+                }
+                const extUp = extChangeVal >= 0;
+
                 return (
                   <div
                     key={p.id}
@@ -534,6 +551,14 @@ export default function Home({ onSelect, prices, onViewStock }: Props) {
                               {up ? "+" : ""}{fmtFull(p.total_gain_loss)} ({up ? "+" : ""}{p.total_gain_loss_pct.toFixed(2)}%)
                             </span>
                           </div>
+                          {isExtended && extChangeVal !== 0 && (
+                            <div>
+                              <span className="text-[#555] text-xs mr-1">{extSymbol} {extLabel}</span>
+                              <span className={`text-sm ${extUp ? "text-[#f7c44f]" : "text-[#f87171]"}`}>
+                                {extUp ? "+" : ""}{fmtFull(extChangeVal)}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
                       <div className="flex flex-col items-end gap-2 ml-3 shrink-0">

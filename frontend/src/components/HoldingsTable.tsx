@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Trash2, Plus, ArrowUpDown, TrendingDown } from "lucide-react";
 import type { Holding, CachedBuyTarget } from "../types";
+import type { ExtendedPrice } from "../hooks/useWebSocket";
 
 interface Props {
   holdings: Holding[];
@@ -11,6 +12,8 @@ interface Props {
   onDeleteTransaction: (holdingId: number, txId: number) => void;
   buyTargets?: Map<string, CachedBuyTarget>;
   onViewStock?: (symbol: string) => void;
+  extendedPrices?: Record<string, ExtendedPrice>;
+  session?: string;
 }
 
 const SIGNAL_STYLE: Record<string, { bg: string; text: string; label: string }> = {
@@ -55,7 +58,7 @@ function sortHoldings(holdings: Holding[], key: SortKey, dir: SortDir): Holding[
   });
 }
 
-export default function HoldingsTable({ holdings, totalPortfolioValue, onAddBuy, onSell, onDeleteHolding, onDeleteTransaction, buyTargets, onViewStock }: Props) {
+export default function HoldingsTable({ holdings, totalPortfolioValue, onAddBuy, onSell, onDeleteHolding, onDeleteTransaction, buyTargets, onViewStock, extendedPrices = {}, session = "closed" }: Props) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [sortKey, setSortKey] = useState<SortKey>("value");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -141,6 +144,10 @@ export default function HoldingsTable({ holdings, totalPortfolioValue, onAddBuy,
           const isUp = h.gain_loss >= 0;
           const dayUp = h.day_change >= 0;
           const isOpen = expanded.has(h.id);
+          const ext = extendedPrices[h.symbol];
+          const isExtended = (session === "pre_market" || session === "post_market") && !!ext;
+          const extLabel = session === "pre_market" ? "Pre-Mkt" : "After Hrs";
+          const extUp = ext ? ext.change >= 0 : false;
 
           return (
             <div key={h.id} className="border border-[#2a2a2a] rounded-xl overflow-hidden">
@@ -164,7 +171,7 @@ export default function HoldingsTable({ holdings, totalPortfolioValue, onAddBuy,
                     </span>
                   </div>
                   <div className="text-[#8a8a8a] text-xs truncate">{h.name}</div>
-                  {/* Current price row — prominent, always its own line */}
+                  {/* Current price row */}
                   {h.current_price > 0 && (
                     <div className="flex items-center gap-2 mt-0.5">
                       <span className="text-white text-sm font-semibold tabular-nums">
@@ -175,6 +182,24 @@ export default function HoldingsTable({ holdings, totalPortfolioValue, onAddBuy,
                           avg {fmt(h.total_cost / h.total_quantity)}
                         </span>
                       )}
+                    </div>
+                  )}
+                  {/* Extended-hours price line */}
+                  {isExtended && ext && (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        session === "pre_market"
+                          ? "bg-[#2a2000] text-[#f7c44f]"
+                          : "bg-[#1e1030] text-[#a78bfa]"
+                      }`}>
+                        {extLabel}
+                      </span>
+                      <span className="text-white text-xs font-semibold tabular-nums">
+                        {fmt(ext.price)}
+                      </span>
+                      <span className={`text-xs ${extUp ? "text-[#00c805]" : "text-[#ff5000]"}`}>
+                        {extUp ? "+" : ""}{fmt(ext.change)} ({extUp ? "+" : ""}{ext.change_pct.toFixed(2)}%)
+                      </span>
                     </div>
                   )}
                 </div>

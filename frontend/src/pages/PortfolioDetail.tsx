@@ -17,19 +17,22 @@ import SellModal from "../components/SellModal";
 import BuyAnalysis from "../components/BuyAnalysis";
 import Popi from "../components/Popi";
 import { useBuyTargets } from "../hooks/useBuyTargets";
+import type { ExtendedPrice } from "../hooks/useWebSocket";
 
 interface Props {
   portfolio: Portfolio;
   onBack: () => void;
   onUpdate: (p: Portfolio) => void;
   onViewStock?: (symbol: string) => void;
+  extendedPrices?: Record<string, ExtendedPrice>;
+  session?: string;
 }
 
 function fmt(n: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-export default function PortfolioDetail({ portfolio, onBack, onUpdate, onViewStock }: Props) {
+export default function PortfolioDetail({ portfolio, onBack, onUpdate, onViewStock, extendedPrices = {}, session = "closed" }: Props) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [addBuyFor, setAddBuyFor] = useState<Holding | null>(null);
   const [sellFor, setSellFor] = useState<Holding | null>(null);
@@ -265,6 +268,8 @@ export default function PortfolioDetail({ portfolio, onBack, onUpdate, onViewSto
                 onDeleteTransaction={handleDeleteTransaction}
                 buyTargets={buyTargets}
                 onViewStock={onViewStock}
+                extendedPrices={extendedPrices}
+                session={session}
               />
             </div>
           </div>

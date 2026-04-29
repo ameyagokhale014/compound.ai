@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
+import type { ExtendedPrice } from "./hooks/useWebSocket";
 import Home from "./pages/Home";
 import PortfolioDetail from "./pages/PortfolioDetail";
 import MasterPortfolio from "./pages/MasterPortfolio";
@@ -39,8 +40,10 @@ export default function App() {
   const [tab, setTab]             = useState<Tab>("dashboard");
   const [selected, setSelected]   = useState<Portfolio | null>(null);
   const [stockSymbol, setStockSymbol] = useState<string | null>(null);
-  const [prices, setPrices]       = useState<Record<string, number>>({});
-  const [marketOpen, setMarketOpen] = useState(false);
+  const [prices, setPrices]           = useState<Record<string, number>>({});
+  const [extendedPrices, setExtended] = useState<Record<string, ExtendedPrice>>({});
+  const [session, setSession]         = useState<string>("closed");
+  const [marketOpen, setMarketOpen]   = useState(false);
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [properties, setProperties] = useState<RealEstateProperty[]>([]);
   const [sectors, setSectors]     = useState<Record<string, string>>({});
@@ -80,13 +83,19 @@ export default function App() {
     [selected],
   );
 
-  useWebSocket(handlePriceUpdate);
+  useWebSocket(handlePriceUpdate, (ext, sess) => {
+    setExtended(ext);
+    setSession(sess);
+  });
 
   useEffect(() => {
     const checkMarket = () =>
       fetch("http://localhost:8000/health")
         .then((r) => r.json())
-        .then((d) => setMarketOpen(d.market_open))
+        .then((d) => {
+          setMarketOpen(d.market_open);
+          setSession(d.session ?? (d.market_open ? "regular" : "closed"));
+        })
         .catch(() => {});
     checkMarket();
     const interval = setInterval(checkMarket, 60000);
@@ -174,8 +183,18 @@ export default function App() {
 
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5">
-            <div className={`w-1.5 h-1.5 rounded-full ${marketOpen ? "bg-[#00c805]" : "bg-[#555]"}`} />
-            <span className="text-[#8a8a8a] text-xs">{marketOpen ? "Market Open" : "Market Closed"}</span>
+            <div className={`w-1.5 h-1.5 rounded-full ${
+              session === "regular"    ? "bg-[#00c805]" :
+              session === "pre_market" ? "bg-[#f7c44f] animate-pulse" :
+              session === "post_market"? "bg-[#a78bfa] animate-pulse" :
+              "bg-[#555]"
+            }`} />
+            <span className="text-[#8a8a8a] text-xs">
+              {session === "regular"     ? "Market Open" :
+               session === "pre_market"  ? "Pre-Market" :
+               session === "post_market" ? "After Hours" :
+               "Market Closed"}
+            </span>
           </div>
           <ProfileModal />
         </div>
@@ -194,6 +213,8 @@ export default function App() {
           onBack={() => setSelected(null)}
           onUpdate={setSelected}
           onViewStock={handleViewStock}
+          extendedPrices={extendedPrices}
+          session={session}
         />
       ) : tab === "watchlist" ? (
         <Watchlist onViewStock={handleViewStock} />
@@ -226,6 +247,8 @@ export default function App() {
         <Home
           onSelect={setSelected}
           prices={prices}
+          extendedPrices={extendedPrices}
+          session={session}
           onViewStock={handleViewStock}
         />
       )}

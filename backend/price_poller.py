@@ -14,17 +14,49 @@ ET = ZoneInfo("America/New_York")
 latest_prices: dict[str, float] = {}
 # Previous close prices for day-change calculation: {symbol: prev_close}
 previous_closes: dict[str, float] = {}
+# Extended-hours prices: {symbol: {price, change, change_pct, session}}
+extended_prices: dict[str, dict] = {}
 # WebSocket connections to broadcast to
 connected_clients: set = set()
 
 
 def is_market_open() -> bool:
     now = datetime.now(ET)
-    if now.weekday() >= 5:  # Saturday/Sunday
+    if now.weekday() >= 5:
         return False
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
     return market_open <= now <= market_close
+
+
+def is_extended_hours() -> bool:
+    """True during pre-market (4–9:30 AM ET) or after-hours (4–8 PM ET) on weekdays."""
+    now = datetime.now(ET)
+    if now.weekday() >= 5:
+        return False
+    pre_start  = now.replace(hour=4,  minute=0,  second=0, microsecond=0)
+    pre_end    = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    post_start = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    post_end   = now.replace(hour=20, minute=0,  second=0, microsecond=0)
+    return (pre_start <= now < pre_end) or (post_start <= now < post_end)
+
+
+def current_session() -> str:
+    """Returns 'regular', 'pre_market', 'post_market', or 'closed'."""
+    now = datetime.now(ET)
+    if now.weekday() >= 5:
+        return "closed"
+    pre_start  = now.replace(hour=4,  minute=0,  second=0, microsecond=0)
+    pre_end    = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    reg_end    = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    post_end   = now.replace(hour=20, minute=0,  second=0, microsecond=0)
+    if pre_start <= now < pre_end:
+        return "pre_market"
+    if pre_end <= now < reg_end:
+        return "regular"
+    if reg_end <= now < post_end:
+        return "post_market"
+    return "closed"
 
 
 def get_tracked_symbols(db: Session) -> dict[str, str]:
@@ -116,10 +148,61 @@ async def fetch_crypto_prices(symbols: list[str]) -> dict[str, float]:
     return prices
 
 
+async def fetch_extended_prices(symbols: list[str]) -> dict[str, dict]:
+    """Fetch pre/post-market prices via ticker.info (fast_info lacks these fields)."""
+    result = {}
+    if not symbols:
+        return result
+    sess = current_session()
+
+    def _fetch_one(sym: str):
+        try:
+            info = yf.Ticker(sym).info
+            if sess == "post_market":
+                ext_price  = info.get("postMarketPrice")
+                change     = info.get("postMarketChange")
+                change_pct = info.get("postMarketChangePercent")
+            else:  # pre_market
+                ext_price  = info.get("preMarketPrice")
+                change     = info.get("preMarketChange")
+                change_pct = info.get("preMarketChangePercent")
+
+            reg_close = info.get("regularMarketPrice") or latest_prices.get(sym)
+
+            if ext_price and ext_price > 0:
+                return sym, {
+                    "price":      round(float(ext_price), 4),
+                    "change":     round(float(change or 0), 4),
+                    "change_pct": round(float(change_pct or 0), 4),
+                    "session":    sess,
+                    "reg_close":  round(float(reg_close), 4) if reg_close else None,
+                }
+        except Exception:
+            pass
+        return sym, None
+
+    # Run fetches in a thread pool so we don't block the event loop
+    loop = asyncio.get_event_loop()
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [loop.run_in_executor(pool, _fetch_one, sym) for sym in symbols]
+        for coro in asyncio.as_completed(futures):
+            sym, data = await coro
+            if data:
+                result[sym] = data
+
+    return result
+
+
 async def broadcast_prices(prices: dict[str, float]):
     if not connected_clients:
         return
-    message = json.dumps({"type": "price_update", "prices": prices})
+    message = json.dumps({
+        "type":     "price_update",
+        "prices":   prices,
+        "extended": extended_prices,
+        "session":  current_session(),
+    })
     dead = set()
     for ws in connected_clients:
         try:
@@ -144,27 +227,29 @@ async def snapshot_portfolio_values(db: Session, prices: dict[str, float]):
 
 
 async def poll_prices():
-    """Main polling loop.
-    - Market open: fetch every 60 seconds.
-    - Market closed: fetch once per hour to keep last-price fresh.
+    """Main polling loop — every 60 seconds.
+    - Regular market hours:  fetch live prices + broadcast
+    - Extended hours:        fetch extended prices every minute + broadcast
+    - Fully closed:          fetch regular prices once per hour (keep last-price fresh)
     """
+    import time
     last_closed_fetch = 0.0
+
     while True:
         db = SessionLocal()
         try:
             symbol_map = get_tracked_symbols(db)
             if symbol_map:
-                stock_syms = [s for s, t in symbol_map.items() if t != AssetType.CRYPTO]
+                stock_syms  = [s for s, t in symbol_map.items() if t != AssetType.CRYPTO]
                 crypto_syms = [s for s, t in symbol_map.items() if t == AssetType.CRYPTO]
-
+                now_ts      = time.time()
                 market_open = is_market_open()
-                import time
-                now_ts = time.time()
-                # Fetch stocks when open (every minute) OR when closed but >1 hour since last fetch
-                should_fetch_stocks = market_open or (now_ts - last_closed_fetch > 3600)
-                new_prices = {}
+                ext_hours   = is_extended_hours()
+                new_prices  = {}
 
-                if should_fetch_stocks and stock_syms:
+                # ── Regular prices ─────────────────────────────────────────────
+                should_fetch = market_open or (not ext_hours and now_ts - last_closed_fetch > 3600)
+                if should_fetch and stock_syms:
                     new_prices.update(await fetch_stock_prices(stock_syms))
                     if not market_open:
                         last_closed_fetch = now_ts
@@ -174,14 +259,24 @@ async def poll_prices():
 
                 if new_prices:
                     latest_prices.update(new_prices)
-
                     now = datetime.utcnow()
                     for sym, price in new_prices.items():
                         db.add(PriceSnapshot(symbol=sym, price=price, recorded_at=now))
                     db.commit()
-
                     await snapshot_portfolio_values(db, latest_prices)
-                    await broadcast_prices(new_prices)
+
+                # ── Extended-hours prices (every minute during pre/post market) ─
+                if ext_hours and stock_syms:
+                    ext = await fetch_extended_prices(stock_syms)
+                    if ext:
+                        extended_prices.update(ext)
+                        session = current_session()
+                        print(f"[extended] {session} — {len(ext)} prices fetched")
+
+                # Broadcast regardless (includes extended_prices in payload)
+                if new_prices or (ext_hours and extended_prices):
+                    await broadcast_prices(new_prices or latest_prices)
+
         except Exception as e:
             print(f"[poller] error: {e}")
         finally:
