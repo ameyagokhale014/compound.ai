@@ -784,3 +784,103 @@ def get_signal_alerts(
     # Sort by abs score descending
     alerts.sort(key=lambda x: abs(x["score"]), reverse=True)
     return alerts
+
+
+@router.get("/oversold/scan")
+def get_oversold_scan(db: Session = Depends(get_db)):
+    """
+    Scan all portfolio + watchlist symbols for oversold conditions:
+    - Bollinger Band %B < 15% (price near or below lower band)
+    - RSI < 40 (approaching or in oversold territory)
+    Returns all stocks meeting either condition, sorted by severity.
+    """
+    if not HAS_YFINANCE:
+        return []
+
+    symbols: set[str] = set()
+    try:
+        for h in db.query(models.Holding).filter(models.Holding.asset_type != "cash").all():
+            if h.symbol:
+                symbols.add(h.symbol.upper())
+    except Exception:
+        pass
+    try:
+        for w in db.query(models.WatchlistItem).all():
+            if w.symbol:
+                symbols.add(w.symbol.upper())
+    except Exception:
+        pass
+
+    results = []
+    for sym in sorted(symbols):
+        try:
+            df = _fetch_ohlcv(sym)
+            if df is None:
+                continue
+            ind = _compute(df)
+
+            price   = _safe(df["Close"].iloc[-1])
+            rsi     = _safe(ind["rsi"].iloc[-1])
+            bb_up   = _safe(ind["bb_upper"].iloc[-1])
+            bb_lo   = _safe(ind["bb_lower"].iloc[-1])
+            bb_mid  = _safe(ind["sma20"].iloc[-1])
+            bb_wid  = _safe(ind["bb_width"].iloc[-1])
+
+            if price is None or bb_up is None or bb_lo is None:
+                continue
+
+            pct_b = (price - bb_lo) / (bb_up - bb_lo) if (bb_up - bb_lo) > 0 else 0.5
+
+            # Only include if near lower Bollinger Band OR RSI oversold
+            bb_oversold  = pct_b < 0.15
+            rsi_oversold = rsi is not None and rsi < 40
+
+            if not bb_oversold and not rsi_oversold:
+                continue
+
+            # Severity: lower pct_b and lower RSI = more oversold
+            severity = 0
+            triggers = []
+            if bb_oversold:
+                severity += (0.15 - pct_b) * 10   # 0→1.5 pts
+                triggers.append({
+                    "name": "Bollinger Bands",
+                    "detail": f"%B at {pct_b*100:.1f}% — price near lower band (${bb_lo:.2f})",
+                    "type": "bollinger",
+                })
+            if rsi_oversold:
+                severity += (40 - rsi) / 10        # 0→4 pts if RSI=0
+                triggers.append({
+                    "name": "RSI",
+                    "detail": f"RSI at {rsi:.1f} — {'deeply ' if rsi < 30 else ''}oversold territory",
+                    "type": "rsi",
+                })
+
+            # 1-week and 1-month price change
+            week_chg = month_chg = None
+            try:
+                if len(df) >= 5:
+                    week_chg = ((price - float(df["Close"].iloc[-6])) / float(df["Close"].iloc[-6])) * 100
+                if len(df) >= 21:
+                    month_chg = ((price - float(df["Close"].iloc[-22])) / float(df["Close"].iloc[-22])) * 100
+            except Exception:
+                pass
+
+            results.append({
+                "symbol":     sym,
+                "price":      round(price, 2),
+                "pct_b":      round(pct_b * 100, 1),
+                "rsi":        round(rsi, 1) if rsi is not None else None,
+                "bb_lower":   round(bb_lo, 2),
+                "bb_upper":   round(bb_up, 2),
+                "bb_mid":     round(bb_mid, 2) if bb_mid else None,
+                "week_chg":   round(week_chg, 1) if week_chg is not None else None,
+                "month_chg":  round(month_chg, 1) if month_chg is not None else None,
+                "severity":   round(severity, 3),
+                "triggers":   triggers,
+            })
+        except Exception:
+            continue
+
+    results.sort(key=lambda x: x["severity"], reverse=True)
+    return results

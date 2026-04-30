@@ -3,8 +3,8 @@ import { TrendingUp, TrendingDown, Minus, ExternalLink, Clock, Sparkles, Info, C
 import type { Portfolio, RealEstateProperty, CachedBuyTarget, NewsItem } from "../types";
 import { useBuyTargets } from "../hooks/useBuyTargets";
 import { computeWealthScore, type PillarScore, type Recommendation } from "../utils/wealthScore";
-import { getNews, getNewsLastRefresh, getSignalAlerts } from "../api";
-import type { SignalAlert } from "../api";
+import { getNews, getNewsLastRefresh, getSignalAlerts, getOversoldScan } from "../api";
+import type { SignalAlert, OversoldSignal } from "../api";
 
 interface Props {
   portfolios: Portfolio[];
@@ -186,6 +186,77 @@ function NewsRecCard({ item, onViewStock }: { item: NewsItem; onViewStock?: (sym
   );
 }
 
+// ─── Oversold Card ───────────────────────────────────────────────────────────
+function OversoldCard({ sig, onViewStock }: { sig: OversoldSignal; onViewStock?: (sym: string) => void }) {
+  const deeplyOversold = sig.pct_b < 5 || (sig.rsi !== null && sig.rsi < 30);
+  const accent = deeplyOversold ? "#00c805" : "#4dbb50";
+
+  return (
+    <div
+      className="bg-[#0d0d0d] border rounded-xl p-4 cursor-pointer hover:border-[#333] transition-colors"
+      style={{ borderColor: `${accent}33`, borderLeftColor: accent, borderLeftWidth: 3 }}
+      onClick={() => onViewStock?.(sig.symbol)}
+    >
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-white font-bold text-sm">{sig.symbol}</span>
+          <span className="text-[#555] text-xs">${sig.price.toFixed(2)}</span>
+          {sig.week_chg !== null && (
+            <span className={`text-[10px] font-medium ${sig.week_chg < 0 ? "text-[#ff5000]" : "text-[#00c805]"}`}>
+              {sig.week_chg > 0 ? "+" : ""}{sig.week_chg.toFixed(1)}% 1W
+            </span>
+          )}
+        </div>
+        <span
+          className="text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0"
+          style={{ color: accent, backgroundColor: `${accent}18`, border: `1px solid ${accent}33` }}
+        >
+          {deeplyOversold ? "Deeply Oversold" : "Oversold"}
+        </span>
+      </div>
+
+      {/* Indicator pills */}
+      <div className="flex flex-wrap gap-2 mb-2">
+        {sig.triggers.map((t) => (
+          <div key={t.type} className="flex items-center gap-1.5 bg-[#111] rounded-lg px-2.5 py-1.5 border border-[#1e1e1e]">
+            <span className="text-[10px] font-semibold text-[#8a8a8a]">{t.name}</span>
+            <span className="text-[10px] text-[#555]">·</span>
+            <span className="text-[10px] text-[#777]">{t.detail}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* BB visual bar */}
+      {(() => {
+        const range = sig.bb_upper - sig.bb_lower;
+        const pos = range > 0 ? Math.max(0, Math.min(100, ((sig.price - sig.bb_lower) / range) * 100)) : 50;
+        return (
+          <div className="mt-1">
+            <div className="flex justify-between text-[9px] text-[#333] mb-0.5">
+              <span>${sig.bb_lower.toFixed(2)}</span>
+              {sig.bb_mid && <span className="text-[#2a2a2a]">${sig.bb_mid.toFixed(2)}</span>}
+              <span>${sig.bb_upper.toFixed(2)}</span>
+            </div>
+            <div className="relative h-1.5 bg-[#1a1a1a] rounded-full">
+              <div className="absolute left-1/2 top-0 w-px h-1.5 bg-[#2a2a2a]" />
+              <div
+                className="absolute top-0 w-2 h-1.5 rounded-full -translate-x-1/2 transition-all"
+                style={{ left: `${pos}%`, backgroundColor: accent }}
+              />
+            </div>
+            <div className="text-[9px] text-[#444] mt-0.5 text-center">Bollinger Band range</div>
+          </div>
+        );
+      })()}
+
+      <div className="mt-2 text-[10px] text-[#444] flex items-center gap-1">
+        <TrendingUp size={8} style={{ color: accent }} />
+        Click to view full technical analysis
+      </div>
+    </div>
+  );
+}
+
 // ─── Signal Alert Card ────────────────────────────────────────────────────────
 function SignalAlertCard({ alert, onViewStock }: { alert: SignalAlert; onViewStock?: (sym: string) => void }) {
   const bull  = alert.verdict === "bullish";
@@ -245,6 +316,8 @@ export default function RecommendationsHub({ portfolios, properties, sectors, on
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [signalAlerts, setSignalAlerts] = useState<SignalAlert[]>([]);
   const [signalAlertsLoading, setSignalAlertsLoading] = useState(false);
+  const [oversoldSignals, setOversoldSignals] = useState<OversoldSignal[]>([]);
+  const [oversoldLoading, setOversoldLoading] = useState(false);
 
   const stockSymbols = useMemo(() => {
     const s = new Set<string>();
@@ -287,6 +360,16 @@ export default function RecommendationsHub({ portfolios, properties, sectors, on
       .then(setSignalAlerts)
       .catch(() => setSignalAlerts([]))
       .finally(() => setSignalAlertsLoading(false));
+  }, [stockSymbols.join(",")]);
+
+  // Fetch oversold scan
+  useEffect(() => {
+    if (!stockSymbols.length) return;
+    setOversoldLoading(true);
+    getOversoldScan()
+      .then(setOversoldSignals)
+      .catch(() => setOversoldSignals([]))
+      .finally(() => setOversoldLoading(false));
   }, [stockSymbols.join(",")]);
 
   const { total, grade, gradeLabel, gradeColor, pillars, recommendations, summary } = score;
@@ -383,6 +466,33 @@ export default function RecommendationsHub({ portfolios, properties, sectors, on
               <span className="text-[#4f8ef7] font-bold text-sm">+{potentialGain} pts</span>{" "}
               to your score and strengthen your portfolio.
             </div>
+          </div>
+        )}
+
+        {/* ── Oversold Opportunities ── */}
+        {(oversoldLoading || oversoldSignals.length > 0) && (
+          <div className="bg-[#141414] border border-[#2a2a2a] rounded-2xl p-6 mb-4">
+            <div className="flex items-center gap-2 mb-1">
+              <TrendingDown size={14} className="text-[#00c805]" />
+              <h3 className="text-white font-semibold text-sm">Oversold Opportunities</h3>
+              {!oversoldLoading && (
+                <span className="text-[#555] text-xs ml-1">
+                  {oversoldSignals.length} stock{oversoldSignals.length !== 1 ? "s" : ""} showing oversold signals
+                </span>
+              )}
+            </div>
+            <div className="text-[#444] text-[10px] mb-4">
+              Stocks near their lower Bollinger Band or with RSI below 40 — potential mean-reversion opportunities
+            </div>
+            {oversoldLoading ? (
+              <div className="text-[#444] text-sm py-3 text-center">Scanning for oversold conditions…</div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {oversoldSignals.map(s => (
+                  <OversoldCard key={s.symbol} sig={s} onViewStock={onViewStock} />
+                ))}
+              </div>
+            )}
           </div>
         )}
 

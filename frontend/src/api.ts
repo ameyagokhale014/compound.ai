@@ -409,6 +409,22 @@ export const getSignals = (symbol: string, insight = false) => {
 export const getSignalAlerts = () =>
   api.get<SignalAlert[]>("/signals/alerts/scan").then((r) => r.data);
 
+export interface OversoldSignal {
+  symbol: string;
+  price: number;
+  pct_b: number;
+  rsi: number | null;
+  bb_lower: number;
+  bb_upper: number;
+  bb_mid: number | null;
+  week_chg: number | null;
+  month_chg: number | null;
+  severity: number;
+  triggers: { name: string; detail: string; type: "bollinger" | "rsi" }[];
+}
+export const getOversoldScan = () =>
+  api.get<OversoldSignal[]>("/signals/oversold/scan").then((r) => r.data);
+
 // ── Superinvestors ────────────────────────────────────────────────────────────
 
 export interface ManagerMeta {
