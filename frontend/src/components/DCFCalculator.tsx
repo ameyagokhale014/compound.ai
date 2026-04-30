@@ -198,6 +198,8 @@ function LearnPanel() {
 export default function DCFCalculator({ symbol, currentPrice }: Props) {
   const [loading, setLoading]   = useState(true);
   const [defaults, setDefaults] = useState<{ ttmFCF: number; shares: number; netCash: number; suggestedGrowth: number } | null>(null);
+  const [marketCap,  setMarketCap]  = useState<number | null>(null);
+  const [ttmRevenue, setTtmRevenue] = useState<number | null>(null);
 
   // Inputs
   const [ttmFCF,         setTtmFCF]         = useState(0);
@@ -217,14 +219,19 @@ export default function DCFCalculator({ symbol, currentPrice }: Props) {
         const fcf = d.ttm_fcf;
         const sh  = d.shares;
         const nc  = d.net_cash ?? 0;
-        const sg  = d.suggested_growth ?? 15;
+        // Cap default growth at 20% — high-growth yfinance revenue figures
+        // often overstate sustainable FCF growth, especially for fintech companies
+        const sg  = Math.min(20, d.suggested_growth ?? 15);
         setTtmFCF(fcf);
         setShares(sh);
         setNetCash(nc);
+        setMarketCap(d.market_cap ?? null);
         setGrowthY1to5(Math.round(sg));
         setGrowthY6to10(Math.max(3, Math.round(sg * 0.6)));
         setDefaults({ ttmFCF: fcf, shares: sh, netCash: nc, suggestedGrowth: sg });
       }
+      // Fetch TTM revenue for FCF margin sanity check
+      if (d.market_cap) setMarketCap(d.market_cap);
     }).catch(() => {}).finally(() => setLoading(false));
   }, [symbol]);
 
@@ -238,6 +245,14 @@ export default function DCFCalculator({ symbol, currentPrice }: Props) {
   const mosUpside = result && price > 0 ? ((result.buyPrice - price) / price) * 100 : null;
   const isUndervalued = result ? result.intrinsicValue > price : false;
   const mosTriggered  = result ? result.buyPrice > price : false;
+
+  // Sanity checks
+  const fcfYield = marketCap && ttmFCF ? (ttmFCF / marketCap) * 100 : null;
+  const impliedMktCapMultiple = result && marketCap ? result.equityValue / marketCap : null;
+  const isSuspect = (impliedMktCapMultiple !== null && impliedMktCapMultiple > 5) ||
+                    (fcfYield !== null && fcfYield > 25);
+  // Suppress unused variable
+  void ttmRevenue; void setTtmRevenue;
 
   if (loading) {
     return (
@@ -256,6 +271,31 @@ export default function DCFCalculator({ symbol, currentPrice }: Props) {
       {/* Learn panel */}
       <LearnPanel />
 
+      {/* Sanity warning */}
+      {isSuspect && result && (
+        <div className="bg-[#1a1000] border border-[#3a2500] rounded-xl p-4 flex gap-3">
+          <span className="text-lg shrink-0">⚠️</span>
+          <div>
+            <div className="text-[#f7c44f] text-xs font-semibold mb-1">Result may be unrealistic — check your inputs</div>
+            <div className="text-[#8a8a8a] text-xs leading-relaxed space-y-1">
+              {impliedMktCapMultiple !== null && impliedMktCapMultiple > 5 && (
+                <div>The implied equity value is <span className="text-white">{impliedMktCapMultiple.toFixed(1)}× the current market cap</span>. This typically means growth assumptions are too aggressive, or the TTM FCF is inflated.</div>
+              )}
+              {fcfYield !== null && fcfYield > 25 && (
+                <div>FCF yield is <span className="text-white">{fcfYield.toFixed(1)}%</span> of market cap — unusually high. For fintech, payments, or financial services companies, yfinance FCF often includes changes in credit portfolios or customer deposits that are not true operational free cash flow. Consider adjusting TTM FCF downward.</div>
+              )}
+              <div className="text-[#555] mt-1">Try lowering the growth rates or manually adjusting the FCF to a more conservative figure before drawing conclusions.</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Time horizon label */}
+      <div className="flex items-center gap-2 text-[#444] text-[10px]">
+        <span>📅</span>
+        <span>This is a <span className="text-[#555]">{years}-year DCF</span> — projecting cash flows from today through {new Date().getFullYear() + years}, then applying a terminal value for all years beyond that.</span>
+      </div>
+
       {/* Two-col layout: inputs left, results right */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
@@ -266,17 +306,34 @@ export default function DCFCalculator({ symbol, currentPrice }: Props) {
           {/* Auto-filled row */}
           <div className="grid grid-cols-3 gap-2">
             {[
-              { label: "TTM Free Cash Flow", value: fmtB(ttmFCF), tip: "Trailing twelve months free cash flow — operating cash flow minus capital expenditure. This is the real cash the business generates. Auto-filled from yfinance." },
-              { label: "Shares Outstanding", value: `${(shares / 1e9).toFixed(2)}B`, tip: "Total shares of the company in existence. Used to divide enterprise value into a per-share price." },
-              { label: "Net Cash", value: fmtB(netCash), tip: "Total cash minus total debt. Positive = fortress balance sheet. Negative = net debt. Added to the DCF enterprise value to get equity value." },
-            ].map(({ label, value, tip }) => (
+              {
+                label: "TTM Free Cash Flow",
+                value: fmtB(ttmFCF),
+                sub: fcfYield != null ? `${fcfYield.toFixed(1)}% FCF yield` : undefined,
+                tip: "Trailing twelve months free cash flow — operating cash flow minus capital expenditure. Auto-filled from yfinance. For fintech/financial companies this may be inflated by credit or deposit activity — treat with care.",
+              },
+              {
+                label: "Shares Outstanding",
+                value: shares >= 1e9 ? `${(shares / 1e9).toFixed(2)}B` : `${(shares / 1e6).toFixed(1)}M`,
+                sub: undefined,
+                tip: "Total shares in existence. Used to convert total equity value to a per-share intrinsic value.",
+              },
+              {
+                label: "Net Cash",
+                value: fmtB(netCash),
+                sub: netCash >= 0 ? "fortress ✓" : "net debt",
+                tip: "Total cash minus total debt. Positive = net cash (an asset). Negative = net debt (a liability). Added to enterprise value to get equity value.",
+              },
+            ].map(({ label, value, sub, tip }) => (
               <div key={label} className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-3">
                 <div className="flex items-center gap-1 mb-1">
                   <div className="text-[#444] text-[9px] uppercase tracking-wide">{label}</div>
                   <Tooltip text={tip} />
                 </div>
                 <div className="text-white text-sm font-semibold tabular-nums">{value}</div>
-                <div className="text-[#2a2a2a] text-[9px] mt-0.5">auto-filled</div>
+                <div className={`text-[9px] mt-0.5 ${sub && sub !== "auto-filled" ? (netCash >= 0 && sub?.includes("fortress") ? "text-[#00c805]" : "text-[#ff8800]") : "text-[#2a2a2a]"}`}>
+                  {sub ?? "auto-filled"}
+                </div>
               </div>
             ))}
           </div>
@@ -318,7 +375,7 @@ export default function DCFCalculator({ symbol, currentPrice }: Props) {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[#8a8a8a] text-xs">Projection Period</span>
+                  <span className="text-[#8a8a8a] text-xs">Projection Period <span className="text-[#333]">({new Date().getFullYear()}→{new Date().getFullYear() + years})</span></span>
                   <Tooltip text="How many years to project cash flows before calculating terminal value. 10 years is standard. Use 5 years for faster, simpler analysis." />
                 </div>
                 <div className="flex gap-1">
