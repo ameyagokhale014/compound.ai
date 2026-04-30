@@ -322,6 +322,57 @@ def get_financials(symbol: str):
         return []
 
 
+@router.get("/{symbol}/dcf-defaults")
+def get_dcf_defaults(symbol: str):
+    """Return auto-filled DCF inputs: TTM FCF, shares outstanding, net cash, growth rates."""
+    try:
+        t = yf.Ticker(symbol.upper())
+        info = t.info or {}
+        qc   = t.quarterly_cashflow
+        qb   = t.quarterly_balance_sheet
+
+        # TTM FCF = sum of last 4 quarters
+        ttm_fcf = None
+        if qc is not None and not qc.empty and "Free Cash Flow" in qc.index:
+            vals = [float(v) for v in qc.loc["Free Cash Flow"].iloc[:4] if v is not None and not pd.isna(v)]
+            if vals:
+                ttm_fcf = sum(vals)
+
+        # Shares outstanding
+        shares = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
+
+        # Net cash = cash & equivalents − total debt (most recent quarter)
+        net_cash = None
+        try:
+            cash_key = "Cash Cash Equivalents And Short Term Investments"
+            cash = float(qb.loc[cash_key].iloc[0]) if cash_key in qb.index else 0.0
+            debt = float(qb.loc["Total Debt"].iloc[0]) if "Total Debt" in qb.index else 0.0
+            net_cash = cash - debt
+        except Exception:
+            total_cash = info.get("totalCash", 0) or 0
+            total_debt = info.get("totalDebt", 0) or 0
+            net_cash = total_cash - total_debt
+
+        # Revenue growth as suggested starting growth rate (clamp to reasonable range)
+        rev_growth = info.get("revenueGrowth")
+        suggested_growth = None
+        if rev_growth is not None:
+            suggested_growth = round(max(2.0, min(50.0, rev_growth * 100)), 1)
+
+        return {
+            "ttm_fcf":         ttm_fcf,
+            "shares":          shares,
+            "net_cash":        net_cash,
+            "suggested_growth": suggested_growth,
+            "revenue_growth":  rev_growth,
+            "market_cap":      info.get("marketCap"),
+            "current_price":   info.get("currentPrice") or info.get("regularMarketPrice"),
+        }
+    except Exception as e:
+        print(f"[stocks] dcf-defaults {symbol}: {e}")
+        return {}
+
+
 @router.get("/{symbol}/price-history")
 def get_price_history(symbol: str, period: str = "1Y"):
     period_map = {

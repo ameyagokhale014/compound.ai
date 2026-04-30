@@ -11,6 +11,7 @@ import { useBuyTargets } from "../hooks/useBuyTargets";
 import Popi from "../components/Popi";
 import TechnicalChart from "../components/TechnicalChart";
 import FinancialSnapshot from "../components/FinancialSnapshot";
+import DCFCalculator from "../components/DCFCalculator";
 
 interface Props {
   symbol: string;
@@ -687,6 +688,17 @@ export default function StockPage({ symbol, onBack, portfolios }: Props) {
               </div>
               <div className="py-3">
                 <FinancialSnapshot symbol={symbol} />
+              </div>
+            </div>
+
+            {/* DCF Calculator */}
+            <div className="bg-[#141414] border border-[#2a2a2a] rounded-2xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-[#2a2a2a]">
+                <h3 className="text-white font-semibold text-sm">DCF Calculator</h3>
+                <div className="text-[#555] text-xs mt-0.5">Intrinsic value based on discounted future cash flows</div>
+              </div>
+              <div className="p-5">
+                <DCFCalculator symbol={symbol} currentPrice={currentPrice > 0 ? currentPrice : undefined} />
               </div>
             </div>
 

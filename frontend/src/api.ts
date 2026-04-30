@@ -129,6 +129,18 @@ export interface QuarterlyFinancials {
 export const getStockFinancials = (symbol: string) =>
   api.get<QuarterlyFinancials[]>(`/stocks/${symbol}/financials`).then((r) => r.data);
 
+export interface DCFDefaults {
+  ttm_fcf: number | null;
+  shares: number | null;
+  net_cash: number | null;
+  suggested_growth: number | null;
+  revenue_growth: number | null;
+  market_cap: number | null;
+  current_price: number | null;
+}
+export const getDCFDefaults = (symbol: string) =>
+  api.get<DCFDefaults>(`/stocks/${symbol}/dcf-defaults`).then((r) => r.data);
+
 export const getStockSectors = (symbols: string[]) =>
   api.get<Record<string, string>>("/stocks/sectors", { params: { symbols: symbols.join(",") } }).then((r) => r.data);
 
