@@ -244,6 +244,84 @@ def get_stock(symbol: str, refresh: bool = False, db: Session = Depends(get_db))
     return data
 
 
+@router.get("/{symbol}/financials")
+def get_financials(symbol: str):
+    """Return last 5 quarters of key financial metrics for the compound.ai financial snapshot."""
+    try:
+        t = yf.Ticker(symbol.upper())
+        qi = t.quarterly_income_stmt
+        qc = t.quarterly_cashflow
+        qb = t.quarterly_balance_sheet
+
+        if qi is None or qi.empty:
+            return []
+
+        def safe(df, key, col):
+            try:
+                if key in df.index:
+                    v = df.loc[key, col]
+                    return float(v) if v is not None and not pd.isna(v) else None
+            except Exception:
+                pass
+            return None
+
+        quarters = []
+        cols = list(qi.columns[:5])  # most recent first
+        for col in reversed(cols):   # oldest → newest for display
+            month = col.month if hasattr(col, 'month') else 1
+            q_num = (month - 1) // 3 + 1
+            label = f"Q{q_num} '{col.strftime('%y')}" if hasattr(col, 'strftime') else str(col.date())
+            # ── Income ──────────────────────────────────────────────────────
+            revenue       = safe(qi, "Total Revenue", col)
+            gross_profit  = safe(qi, "Gross Profit", col)
+            op_income     = safe(qi, "Operating Income", col)
+            net_income    = safe(qi, "Net Income", col)
+            eps           = safe(qi, "Diluted EPS", col)
+            # ── Cash flow ───────────────────────────────────────────────────
+            op_cf  = safe(qc, "Operating Cash Flow", col)
+            capex  = safe(qc, "Capital Expenditure", col)
+            fcf    = safe(qc, "Free Cash Flow", col)
+            # ── Balance sheet ───────────────────────────────────────────────
+            cash       = safe(qb, "Cash Cash Equivalents And Short Term Investments", col) \
+                      or safe(qb, "Cash And Cash Equivalents", col)
+            total_debt = safe(qb, "Total Debt", col)
+            equity     = safe(qb, "Common Stock Equity", col)
+
+            net_cash = (cash - total_debt) if cash is not None and total_debt is not None else None
+            gross_margin  = (gross_profit / revenue * 100) if revenue and gross_profit else None
+            op_margin     = (op_income / revenue * 100)    if revenue and op_income else None
+            net_margin    = (net_income / revenue * 100)   if revenue and net_income else None
+            fcf_margin    = (fcf / revenue * 100)          if revenue and fcf else None
+            debt_equity   = (total_debt / equity)          if equity and equity != 0 and total_debt else None
+
+            quarters.append({
+                "label":       label,
+                "date":        str(col.date()),
+                "revenue":     revenue,
+                "gross_profit": gross_profit,
+                "gross_margin": gross_margin,
+                "op_income":   op_income,
+                "op_margin":   op_margin,
+                "net_income":  net_income,
+                "net_margin":  net_margin,
+                "eps":         eps,
+                "op_cf":       op_cf,
+                "capex":       capex,
+                "fcf":         fcf,
+                "fcf_margin":  fcf_margin,
+                "cash":        cash,
+                "total_debt":  total_debt,
+                "net_cash":    net_cash,
+                "equity":      equity,
+                "debt_equity": debt_equity,
+            })
+
+        return quarters
+    except Exception as e:
+        print(f"[stocks] financials {symbol}: {e}")
+        return []
+
+
 @router.get("/{symbol}/price-history")
 def get_price_history(symbol: str, period: str = "1Y"):
     period_map = {

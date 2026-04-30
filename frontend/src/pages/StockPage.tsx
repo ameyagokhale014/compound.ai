@@ -10,6 +10,7 @@ import type { SignalsResponse, TechnicalSignal } from "../api";
 import { useBuyTargets } from "../hooks/useBuyTargets";
 import Popi from "../components/Popi";
 import TechnicalChart from "../components/TechnicalChart";
+import FinancialSnapshot from "../components/FinancialSnapshot";
 
 interface Props {
   symbol: string;
@@ -677,6 +678,17 @@ export default function StockPage({ symbol, onBack, portfolios }: Props) {
                 <PriceChart symbol={symbol} currentPrice={currentPrice} />
               )}
             </Section>
+
+            {/* Financial Snapshot */}
+            <div className="bg-[#141414] border border-[#2a2a2a] rounded-2xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-[#2a2a2a]">
+                <h3 className="text-white font-semibold text-sm">Financial Snapshot</h3>
+                <div className="text-[#555] text-xs mt-0.5">Last 5 quarters · QoQ & YoY growth</div>
+              </div>
+              <div className="py-3">
+                <FinancialSnapshot symbol={symbol} />
+              </div>
+            </div>
 
             {/* Technical Signals */}
             <div className="bg-[#141414] border border-[#2a2a2a] rounded-2xl p-5">

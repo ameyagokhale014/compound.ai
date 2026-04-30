@@ -117,6 +117,18 @@ export const getStockData = (symbol: string, refresh = false) =>
 export const getStockPriceHistory = (symbol: string, period = "1Y") =>
   api.get<{ date: string; close: number; volume: number }[]>(`/stocks/${symbol}/price-history`, { params: { period } }).then((r) => r.data);
 
+export interface QuarterlyFinancials {
+  label: string; date: string;
+  revenue: number | null; gross_profit: number | null; gross_margin: number | null;
+  op_income: number | null; op_margin: number | null;
+  net_income: number | null; net_margin: number | null; eps: number | null;
+  op_cf: number | null; capex: number | null; fcf: number | null; fcf_margin: number | null;
+  cash: number | null; total_debt: number | null; net_cash: number | null;
+  equity: number | null; debt_equity: number | null;
+}
+export const getStockFinancials = (symbol: string) =>
+  api.get<QuarterlyFinancials[]>(`/stocks/${symbol}/financials`).then((r) => r.data);
+
 export const getStockSectors = (symbols: string[]) =>
   api.get<Record<string, string>>("/stocks/sectors", { params: { symbols: symbols.join(",") } }).then((r) => r.data);
 
