@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Plus, Trash2, TrendingUp, TrendingDown, Zap } from "lucide-react";
-import { getPortfolios, createPortfolio, deletePortfolio, getRealEstate, getStockSectors, getRecentEarningsSummaries } from "../api";
-import type { Portfolio, RealEstateProperty, RecentEarningsSummary } from "../api";
+import { createPortfolio, deletePortfolio, getRecentEarningsSummaries } from "../api";
+import type { RecentEarningsSummary } from "../api";
 import type { Portfolio as PortfolioType, RealEstateProperty as REType } from "../types";
 import type { ExtendedPrice } from "../hooks/useWebSocket";
 import { useBuyTargets } from "../hooks/useBuyTargets";
@@ -19,6 +19,11 @@ interface Props {
   extendedPrices?: Record<string, ExtendedPrice>;
   session?: string;
   onViewStock?: (symbol: string) => void;
+  portfolios: PortfolioType[];
+  properties: REType[];
+  sectors: Record<string, string>;
+  onPortfoliosChange: (ps: PortfolioType[]) => void;
+  onPropertiesChange: (ps: REType[]) => void;
 }
 
 function fmt(n: number) {
@@ -29,9 +34,7 @@ function fmtFull(n: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
 }
 
-export default function Home({ onSelect, prices, extendedPrices = {}, session = "closed", onViewStock }: Props) {
-  const [portfolios, setPortfolios] = useState<PortfolioType[]>([]);
-  const [properties, setProperties] = useState<REType[]>([]);
+export default function Home({ onSelect, extendedPrices = {}, session = "closed", onViewStock, portfolios, properties, sectors: sectorsProp, onPortfoliosChange, onPropertiesChange }: Props) {
   const [earningsPulse, setEarningsPulse] = useState<RecentEarningsSummary[]>([]);
   type WizardState = {
     step: "type" | "name" | "employer";
@@ -41,15 +44,8 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
     employerStatus: string;
   };
   const [wizard, setWizard] = useState<WizardState | null>(null);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    Promise.all([getPortfolios(), getRealEstate()]).then(([ps, re]) => {
-      setPortfolios(ps as PortfolioType[]);
-      setProperties(re as REType[]);
-      setLoading(false);
-    });
-  }, [prices]);
+  const loading = portfolios.length === 0 && properties.length === 0;
 
   // Fetch cached earnings call summaries for the pulse strip (no API key needed)
   useEffect(() => {
@@ -72,7 +68,7 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
       w.company.trim() || undefined,
       w.employerStatus || undefined,
     );
-    setPortfolios((prev) => [...prev, p]);
+    onPortfoliosChange([...portfolios, p]);
     setWizard(null);
   }
 
@@ -80,7 +76,7 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
     e.stopPropagation();
     if (!confirm("Delete this portfolio?")) return;
     await deletePortfolio(id);
-    setPortfolios((prev) => prev.filter((p) => p.id !== id));
+    onPortfoliosChange(portfolios.filter((p) => p.id !== id));
   }
 
   const totalPortfolio = portfolios.reduce((s, p) => s + p.total_value, 0);
@@ -124,7 +120,7 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
     return { nonRetirementIndivStocks: indiv, nonRetirementFunds: funds };
   }, [nonRetirementPortfolios]);
 
-  const [sectors, setSectors] = useState<Record<string, string>>({});
+  const sectors = sectorsProp;
 
   const allStockSymbols = useMemo(() => {
     const seen = new Set<string>();
@@ -135,11 +131,6 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
     }
     return Array.from(seen);
   }, [portfolios]);
-
-  useEffect(() => {
-    if (!allStockSymbols.length) return;
-    getStockSectors(allStockSymbols).then(setSectors);
-  }, [allStockSymbols.join(",")]);
 
   const buyTargets = useBuyTargets(allStockSymbols);
 
@@ -383,6 +374,8 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
             portfolios={portfolios}
             totalValue={totalPortfolio}
             totalTodayValue={totalTodayValue}
+            totalGainLoss={totalGain}
+            totalGainLossPct={totalGainPct}
           />
         )}
 
@@ -731,7 +724,7 @@ export default function Home({ onSelect, prices, extendedPrices = {}, session = 
                 <div className="flex items-baseline justify-between mb-3 px-0.5">
                   <h1 className="text-xl font-semibold text-white">Real Estate</h1>
                 </div>
-                <RealEstatePanel properties={properties} onChange={setProperties} />
+                <RealEstatePanel properties={properties} onChange={onPropertiesChange} />
               </div>
             </div>
 

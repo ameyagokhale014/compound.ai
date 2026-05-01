@@ -459,6 +459,7 @@ export default function StockPage({ symbol, onBack, portfolios }: Props) {
   const [signals, setSignals] = useState<SignalsResponse | null>(null);
   const [signalsLoading, setSignalsLoading] = useState(true);
   const [signalInsightLoading, setSignalInsightLoading] = useState(false);
+  const [aboutExpanded, setAboutExpanded] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -667,7 +668,15 @@ export default function StockPage({ symbol, onBack, portfolios }: Props) {
             {/* Company description */}
             {desc && (
               <Section title="About">
-                <p className="text-[#8a8a8a] text-sm leading-relaxed line-clamp-5">{desc}</p>
+                <p className={`text-[#8a8a8a] text-sm leading-relaxed ${aboutExpanded ? "" : "line-clamp-4"}`}>
+                  {desc}
+                </p>
+                <button
+                  onClick={() => setAboutExpanded((v) => !v)}
+                  className="mt-2 text-xs text-[#4f8ef7] hover:text-[#7aabff] transition-colors"
+                >
+                  {aboutExpanded ? "Show less ↑" : "Show more ↓"}
+                </button>
               </Section>
             )}
 

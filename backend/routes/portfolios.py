@@ -358,14 +358,21 @@ def delete_holding(
     db: Session = Depends(get_db),
 ):
     _own(db, portfolio_id, current_user.id)
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.user_id == current_user.id
+    ).first()
     holding = db.query(Holding).filter(
         Holding.id == holding_id, Holding.portfolio_id == portfolio_id
     ).first()
     if not holding:
         raise HTTPException(404, "Holding not found")
+    # Return cost basis to cash (mirrors the deduction made when buying)
+    cost_basis = sum(tx.quantity * tx.buy_price for tx in holding.transactions)
+    portfolio.cash_balance += cost_basis
     db.delete(holding)
     db.commit()
-    return {"ok": True}
+    db.refresh(portfolio)
+    return portfolio_to_dict(portfolio, price_poller.latest_prices)
 
 
 @router.delete("/{portfolio_id}/holdings/{holding_id}/transactions/{tx_id}")
@@ -375,15 +382,21 @@ def delete_transaction(
     db: Session = Depends(get_db),
 ):
     _own(db, portfolio_id, current_user.id)
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.id == portfolio_id, Portfolio.user_id == current_user.id
+    ).first()
     tx = db.query(Transaction).filter(Transaction.id == tx_id, Transaction.holding_id == holding_id).first()
     if not tx:
         raise HTTPException(404, "Transaction not found")
+    # Return this lot's cost to cash
+    portfolio.cash_balance += tx.quantity * tx.buy_price
     db.delete(tx)
     holding = db.query(Holding).filter(Holding.id == holding_id).first()
     if holding and not holding.transactions:
         db.delete(holding)
     db.commit()
-    return {"ok": True}
+    db.refresh(portfolio)
+    return portfolio_to_dict(portfolio, price_poller.latest_prices)
 
 
 @router.get("/{portfolio_id}/history")

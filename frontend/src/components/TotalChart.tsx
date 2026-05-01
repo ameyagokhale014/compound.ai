@@ -32,9 +32,11 @@ interface Props {
   portfolios: Portfolio[];
   totalValue: number;
   totalTodayValue: number;
+  totalGainLoss: number;
+  totalGainLossPct: number;
 }
 
-export default function TotalChart({ portfolios, totalValue, totalTodayValue }: Props) {
+export default function TotalChart({ portfolios, totalValue, totalTodayValue, totalGainLoss, totalGainLossPct }: Props) {
   const [period, setPeriod] = useState<Period>("1M");
   const [data, setData] = useState<ChartPoint[]>([]);
   const [hovered, setHovered] = useState<ChartPoint | null>(null);
@@ -48,46 +50,49 @@ export default function TotalChart({ portfolios, totalValue, totalTodayValue }: 
         setData([{ timestamp: new Date().toISOString(), value: totalValue }]);
         return;
       }
-      // Drop setup-phase outliers: points below 60% of the max value
-      const maxVal = Math.max(...pts.map((p) => p.value));
-      const threshold = maxVal * 0.6;
-      const filtered = pts.filter((p) => p.value >= threshold);
-      const cleaned = filtered.length >= 2 ? filtered : pts;
-
       if (period === "1D") {
         const todayOpen = new Date();
         todayOpen.setHours(9, 30, 0, 0);
         const syntheticStart: ChartPoint = { timestamp: todayOpen.toISOString(), value: prevCloseTotal };
-        const firstReal = new Date(cleaned[0].timestamp);
-        setData(firstReal > todayOpen ? [syntheticStart, ...cleaned] : cleaned);
+        const firstReal = new Date(pts[0].timestamp);
+        setData(firstReal > todayOpen ? [syntheticStart, ...pts] : pts);
       } else {
-        setData(cleaned);
+        setData(pts);
       }
     });
   }, [period, portfolios.length, totalValue]);
 
-  const startValue = period === "1D" ? prevCloseTotal : (data[0]?.value ?? totalValue);
+  // Reference line: first snapshot in range (visual baseline for chart)
+  const periodStartValue = period === "1D" ? prevCloseTotal : (data[0]?.value ?? totalValue);
 
   const dataMin = data.length ? Math.min(...data.map((d) => d.value)) : 0;
   const dataMax = data.length ? Math.max(...data.map((d) => d.value)) : totalValue;
   const yPad = (dataMax - dataMin) * 0.2 || dataMax * 0.005;
   const yDomain: [number, number] = [Math.max(0, dataMin - yPad), dataMax + yPad];
+
   const displayValue = hovered?.value ?? totalValue;
-  const gain = displayValue - startValue;
-  const gainPct = startValue ? (gain / startValue) * 100 : 0;
-  const isPositive = gain >= 0;
-  const color = isPositive ? "#00c805" : "#ff5000";
+  const allTimeUp = totalGainLoss >= 0;
+  const color = allTimeUp ? "#00c805" : "#ff5000";
 
   if (portfolios.length === 0) return null;
 
   return (
     <div className="bg-[#141414] border border-[#2a2a2a] rounded-2xl p-6 mb-6">
       <div className="mb-4">
-        <div className="text-[#8a8a8a] text-xs uppercase tracking-widest mb-1">Total Portfolio Performance</div>
+        <div className="text-[#8a8a8a] text-xs uppercase tracking-widest mb-1">Total Portfolio Value</div>
         <div className="text-3xl font-semibold text-white">{fmtVal(displayValue)}</div>
-        <div className={`text-sm mt-1 ${isPositive ? "text-[#00c805]" : "text-[#ff5000]"}`}>
-          {isPositive ? "+" : ""}{fmtFull(gain)} ({isPositive ? "+" : ""}{gainPct.toFixed(2)}%)
-          {period !== "ALL" && <span className="text-[#555] ml-1">Past {period}</span>}
+        <div className="flex items-center gap-4 mt-1 flex-wrap">
+          {/* All-time return from cost basis — always accurate */}
+          <div className={`text-sm font-medium ${allTimeUp ? "text-[#00c805]" : "text-[#ff5000]"}`}>
+            {allTimeUp ? "+" : ""}{fmtFull(totalGainLoss)} ({allTimeUp ? "+" : ""}{totalGainLossPct.toFixed(2)}%)
+            <span className="text-[#555] font-normal ml-1.5">all-time return</span>
+          </div>
+          {/* Today's change */}
+          {totalTodayValue !== 0 && (
+            <div className={`text-xs ${totalTodayValue >= 0 ? "text-[#00c805]" : "text-[#ff5000]"}`}>
+              {totalTodayValue >= 0 ? "+" : ""}{fmtFull(totalTodayValue)} today
+            </div>
+          )}
         </div>
       </div>
 
@@ -114,8 +119,8 @@ export default function TotalChart({ portfolios, totalValue, totalTodayValue }: 
                 content={({ active, payload }) => {
                   if (!active || !payload?.[0]) return null;
                   const pt = payload[0].payload as ChartPoint;
-                  const delta = pt.value - startValue;
-                  const deltaPct = startValue ? (delta / startValue) * 100 : 0;
+                  const delta = pt.value - periodStartValue;
+                  const deltaPct = periodStartValue ? (delta / periodStartValue) * 100 : 0;
                   const up = delta >= 0;
                   return (
                     <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-xs shadow-xl">
@@ -128,7 +133,7 @@ export default function TotalChart({ portfolios, totalValue, totalTodayValue }: 
                   );
                 }}
               />
-              <ReferenceLine y={startValue} stroke="#333" strokeDasharray="3 3" />
+              <ReferenceLine y={periodStartValue} stroke="#333" strokeDasharray="3 3" />
               <Area
                 type="monotone"
                 dataKey="value"

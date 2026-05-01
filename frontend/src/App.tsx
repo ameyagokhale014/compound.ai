@@ -53,7 +53,7 @@ export default function App() {
       setPortfolios(ps);
       setProperties(re);
     });
-  }, [prices]);
+  }, []);
 
   // Pre-fetch sectors globally so News + Recs pages have them immediately
   useEffect(() => {
@@ -250,6 +250,11 @@ export default function App() {
           extendedPrices={extendedPrices}
           session={session}
           onViewStock={handleViewStock}
+          portfolios={portfolios}
+          properties={properties}
+          sectors={sectors}
+          onPortfoliosChange={setPortfolios}
+          onPropertiesChange={setProperties}
         />
       )}
     </div>

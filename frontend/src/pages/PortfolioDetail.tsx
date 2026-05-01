@@ -118,24 +118,15 @@ export default function PortfolioDetail({ portfolio, onBack, onUpdate, onViewSto
 
   const handleDeleteHolding = useCallback(
     async (holdingId: number) => {
-      await deleteHolding(portfolio.id, holdingId);
-      const updated = {
-        ...portfolio,
-        holdings: portfolio.holdings.filter((h) => h.id !== holdingId),
-      };
-      // Recalculate totals
-      const totalCost = updated.holdings.reduce((s, h) => s + h.total_cost, 0);
-      const totalValue = updated.holdings.reduce((s, h) => s + h.current_value, 0) + updated.cash_balance;
-      onUpdate({ ...updated, total_cost: totalCost, total_value: totalValue });
+      const updated = await deleteHolding(portfolio.id, holdingId);
+      onUpdate(updated);
     },
     [portfolio, onUpdate]
   );
 
   const handleDeleteTransaction = useCallback(
     async (holdingId: number, txId: number) => {
-      const updated = await deleteTransaction(portfolio.id, holdingId, txId).then(() =>
-        import("../api").then((m) => m.getPortfolio(portfolio.id))
-      );
+      const updated = await deleteTransaction(portfolio.id, holdingId, txId);
       onUpdate(updated);
     },
     [portfolio, onUpdate]

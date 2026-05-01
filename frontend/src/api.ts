@@ -55,7 +55,7 @@ export const addTransaction = (
     .then((r) => r.data);
 
 export const deleteHolding = (portfolioId: number, holdingId: number) =>
-  api.delete(`/portfolios/${portfolioId}/holdings/${holdingId}`);
+  api.delete<import("./types").Portfolio>(`/portfolios/${portfolioId}/holdings/${holdingId}`).then((r) => r.data);
 
 export const sellHolding = (
   portfolioId: number,
@@ -64,7 +64,7 @@ export const sellHolding = (
 ) => api.post<import("./types").Portfolio>(`/portfolios/${portfolioId}/holdings/${holdingId}/sell`, data).then((r) => r.data);
 
 export const deleteTransaction = (portfolioId: number, holdingId: number, txId: number) =>
-  api.delete(`/portfolios/${portfolioId}/holdings/${holdingId}/transactions/${txId}`);
+  api.delete<import("./types").Portfolio>(`/portfolios/${portfolioId}/holdings/${holdingId}/transactions/${txId}`).then((r) => r.data);
 
 export const getPortfolioHistory = (portfolioId: number, period: Period) =>
   api.get<ChartPoint[]>(`/portfolios/${portfolioId}/history`, { params: { period } }).then((r) => r.data);
@@ -143,6 +143,12 @@ export const getDCFDefaults = (symbol: string) =>
 
 export const getStockSectors = (symbols: string[]) =>
   api.get<Record<string, string>>("/stocks/sectors", { params: { symbols: symbols.join(",") } }).then((r) => r.data);
+
+export const getStockCountries = (symbols: string[]) =>
+  api.get<Record<string, string | null>>("/stocks/countries", { params: { symbols: symbols.join(",") } }).then((r) => r.data);
+
+export const getMarketCaps = (symbols: string[]) =>
+  api.get<Record<string, number | null>>("/stocks/market-caps", { params: { symbols: symbols.join(",") } }).then((r) => r.data);
 
 export const getWatchlist = () =>
   api.get<import("./types").WatchlistItem[]>("/watchlist/").then((r) => r.data);

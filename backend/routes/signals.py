@@ -4,12 +4,16 @@ GET /signals/{symbol}         — full analysis + chart data
 GET /signals/alerts           — portfolio/watchlist symbols with |score| >= 4
 """
 from __future__ import annotations
-import json, math
+import json, math, time
 from typing import Optional
 from fastapi import APIRouter, Header, Depends, Query
 from sqlalchemy.orm import Session
 from database import get_db
 import models
+
+# ── in-memory signal cache (15 min TTL) ───────────────────────────────────────
+_signal_cache: dict[str, tuple[float, dict]] = {}  # symbol → (ts, payload)
+_SIGNAL_TTL = 900  # seconds
 
 try:
     import yfinance as yf
@@ -40,7 +44,7 @@ def _safe(v) -> Optional[float]:
         return None
 
 
-def _fetch_ohlcv(symbol: str, period: str = "2y") -> Optional["pd.DataFrame"]:
+def _fetch_ohlcv(symbol: str, period: str = "1y") -> Optional["pd.DataFrame"]:
     """Download OHLCV via yfinance, flatten MultiIndex if needed."""
     if not HAS_YFINANCE:
         return None
@@ -697,6 +701,12 @@ def get_signals(
     if not HAS_YFINANCE:
         return {"error": "yfinance not installed", "symbol": symbol}
 
+    # Return cached result if fresh (skip cache when AI insight is requested)
+    if not insight:
+        cached = _signal_cache.get(symbol)
+        if cached and (time.time() - cached[0]) < _SIGNAL_TTL:
+            return cached[1]
+
     df = _fetch_ohlcv(symbol)
     if df is None:
         return {"error": f"Could not fetch data for {symbol}", "symbol": symbol}
@@ -705,12 +715,20 @@ def get_signals(
     signals, score = _detect_signals(df, ind)
     chart_data = _build_chart_data(df, ind, limit=365)
 
-    # Stock name from yfinance
+    # Get name from stock data cache — avoids an extra yfinance round-trip
     name = symbol
     try:
-        ticker = yf.Ticker(symbol)
-        info   = ticker.info or {}
-        name   = info.get("shortName") or info.get("longName") or symbol
+        cached_stock = db.query(models.StockDataCache).filter(
+            models.StockDataCache.symbol == symbol
+        ).first()
+        if cached_stock:
+            stock_data = json.loads(cached_stock.data)
+            name = (
+                stock_data.get("yf_info", {}).get("longName")
+                or stock_data.get("yf_info", {}).get("shortName")
+                or (stock_data.get("profile") or {}).get("companyName")
+                or symbol
+            )
     except Exception:
         pass
 
@@ -719,7 +737,7 @@ def get_signals(
     if insight and x_api_key and price:
         ai_insight = _generate_insight(symbol, name, price, score, signals, x_api_key)
 
-    return {
+    result = {
         "symbol":     symbol,
         "name":       name,
         "score":      score,
@@ -727,6 +745,12 @@ def get_signals(
         "chart_data": chart_data,
         "ai_insight": ai_insight,
     }
+
+    # Store in cache (only non-insight responses — insight is always fresh)
+    if not insight:
+        _signal_cache[symbol] = (time.time(), result)
+
+    return result
 
 
 @router.get("/alerts/scan")

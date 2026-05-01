@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import json
 import os
+import time
 import requests
 import yfinance as yf
 import pandas as pd
@@ -16,6 +17,14 @@ router = APIRouter(prefix="/stocks", tags=["stocks"])
 FMP_KEY = os.environ.get("FMP_API_KEY", "")
 FMP_BASE = "https://financialmodelingprep.com/api/v3"
 CACHE_TTL = timedelta(hours=24)
+
+# In-memory caches (survive for the process lifetime)
+_price_history_cache: dict[str, tuple[float, list]] = {}   # "AAPL:1Y" → (ts, data)
+_financials_cache: dict[str, tuple[float, list]] = {}       # symbol → (ts, data)
+_dcf_defaults_cache: dict[str, tuple[float, dict]] = {}     # symbol → (ts, data)
+_PRICE_HISTORY_TTL = 3600   # 1 hour
+_FINANCIALS_TTL    = 3600   # 1 hour
+_DCF_TTL           = 3600   # 1 hour
 
 
 def _fmp(path: str, params: dict = {}):
@@ -206,6 +215,57 @@ def get_sectors(symbols: str, db: Session = Depends(get_db)):
     return result
 
 
+@router.get("/market-caps")
+def get_market_caps(symbols: str, db: Session = Depends(get_db)):
+    """Batch-fetch market cap (in dollars) for a comma-separated list of symbols from cache."""
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    result: dict = {}
+
+    for sym in symbol_list:
+        cached = db.query(StockDataCache).filter(StockDataCache.symbol == sym).first()
+        if cached:
+            data = json.loads(cached.data)
+            mc = (
+                data.get("yf_info", {}).get("marketCap")
+                or (data.get("profile") or {}).get("mktCap")
+                or data.get("market_cap")
+            )
+            result[sym] = int(mc) if mc else None
+        else:
+            result[sym] = None
+
+    return result
+
+
+@router.get("/countries")
+def get_countries(symbols: str, db: Session = Depends(get_db)):
+    """Batch-fetch country for a comma-separated list of symbols. Reads from cache first."""
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    result: dict = {}
+    missing: list = []
+
+    for sym in symbol_list:
+        cached = db.query(StockDataCache).filter(StockDataCache.symbol == sym).first()
+        if cached:
+            data = json.loads(cached.data)
+            country = (
+                data.get("yf_info", {}).get("country")
+                or (data.get("profile") or {}).get("country")
+            )
+            result[sym] = country or None
+        else:
+            missing.append(sym)
+
+    for sym in missing:
+        try:
+            info = yf.Ticker(sym).info or {}
+            result[sym] = info.get("country") or None
+        except Exception:
+            result[sym] = None
+
+    return result
+
+
 @router.get("/{symbol}")
 def get_stock(symbol: str, refresh: bool = False, db: Session = Depends(get_db)):
     symbol = symbol.upper()
@@ -247,8 +307,12 @@ def get_stock(symbol: str, refresh: bool = False, db: Session = Depends(get_db))
 @router.get("/{symbol}/financials")
 def get_financials(symbol: str):
     """Return last 5 quarters of key financial metrics for the compound.ai financial snapshot."""
+    sym = symbol.upper()
+    cached = _financials_cache.get(sym)
+    if cached and (time.time() - cached[0]) < _FINANCIALS_TTL:
+        return cached[1]
     try:
-        t = yf.Ticker(symbol.upper())
+        t = yf.Ticker(sym)
         qi = t.quarterly_income_stmt
         qc = t.quarterly_cashflow
         qb = t.quarterly_balance_sheet
@@ -316,17 +380,22 @@ def get_financials(symbol: str):
                 "debt_equity": debt_equity,
             })
 
+        _financials_cache[sym] = (time.time(), quarters)
         return quarters
     except Exception as e:
-        print(f"[stocks] financials {symbol}: {e}")
+        print(f"[stocks] financials {sym}: {e}")
         return []
 
 
 @router.get("/{symbol}/dcf-defaults")
 def get_dcf_defaults(symbol: str):
     """Return auto-filled DCF inputs: TTM FCF, shares outstanding, net cash, growth rates."""
+    sym = symbol.upper()
+    cached = _dcf_defaults_cache.get(sym)
+    if cached and (time.time() - cached[0]) < _DCF_TTL:
+        return cached[1]
     try:
-        t = yf.Ticker(symbol.upper())
+        t = yf.Ticker(sym)
         info = t.info or {}
         qc   = t.quarterly_cashflow
         qb   = t.quarterly_balance_sheet
@@ -359,7 +428,7 @@ def get_dcf_defaults(symbol: str):
         if rev_growth is not None:
             suggested_growth = round(max(2.0, min(50.0, rev_growth * 100)), 1)
 
-        return {
+        result = {
             "ttm_fcf":         ttm_fcf,
             "shares":          shares,
             "net_cash":        net_cash,
@@ -368,13 +437,20 @@ def get_dcf_defaults(symbol: str):
             "market_cap":      info.get("marketCap"),
             "current_price":   info.get("currentPrice") or info.get("regularMarketPrice"),
         }
+        _dcf_defaults_cache[sym] = (time.time(), result)
+        return result
     except Exception as e:
-        print(f"[stocks] dcf-defaults {symbol}: {e}")
+        print(f"[stocks] dcf-defaults {sym}: {e}")
         return {}
 
 
 @router.get("/{symbol}/price-history")
 def get_price_history(symbol: str, period: str = "1Y"):
+    cache_key = f"{symbol.upper()}:{period}"
+    cached = _price_history_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _PRICE_HISTORY_TTL:
+        return cached[1]
+
     period_map = {
         "1M": "1mo", "3M": "3mo", "6M": "6mo",
         "1Y": "1y", "3Y": "3y", "5Y": "5y",
@@ -384,7 +460,7 @@ def get_price_history(symbol: str, period: str = "1Y"):
         hist = yf.Ticker(symbol.upper()).history(period=yf_period, interval="1d")
         if hist.empty:
             return []
-        return [
+        result = [
             {
                 "date": str(idx.date()),
                 "close": round(float(row["Close"]), 2),
@@ -392,6 +468,8 @@ def get_price_history(symbol: str, period: str = "1Y"):
             }
             for idx, row in hist.iterrows()
         ]
+        _price_history_cache[cache_key] = (time.time(), result)
+        return result
     except Exception as e:
         print(f"[stocks] price history {symbol}: {e}")
         return []

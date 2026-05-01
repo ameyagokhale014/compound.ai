@@ -1,12 +1,15 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import type { Portfolio, RealEstateProperty } from "../types";
 import type { ExtendedPrice } from "../hooks/useWebSocket";
 import { useBuyTargets } from "../hooks/useBuyTargets";
+import { useHoldingTags, STRATEGY_TAGS, TAG_META } from "../hooks/useHoldingTags";
+import type { StrategyTag } from "../hooks/useHoldingTags";
 import PopiStocks from "../components/PopiStocks";
 import TotalChart from "../components/TotalChart";
 import BuyAnalysis from "../components/BuyAnalysis";
 import AllocationChart from "../components/AllocationChart";
-import { ArrowUpDown } from "lucide-react";
+import StrategyPieChart from "../components/StrategyPieChart";
+import { ArrowUpDown, ChevronDown, X } from "lucide-react";
 
 interface Props {
   portfolios: Portfolio[];
@@ -34,6 +37,13 @@ interface AggHolding {
 
 type SortKey = "value" | "gain_loss_pct" | "day_change" | "allocation" | "signal";
 type SortDir = "desc" | "asc";
+const ASSET_TYPE_FILTERS = [
+  { id: "stock",       label: "Stocks" },
+  { id: "etf",         label: "ETFs" },
+  { id: "mutual_fund", label: "Mutual Funds" },
+  { id: "crypto",      label: "Crypto" },
+  { id: "cash",        label: "Cash" },
+];
 
 const SIGNAL_STYLE: Record<string, { bg: string; text: string; label: string }> = {
   strong_buy:   { bg: "bg-[#0a2a0a]", text: "text-[#00c805]", label: "Strong Buy" },
@@ -63,6 +73,24 @@ function fmtQty(n: number) {
 export default function MasterPortfolio({ portfolios, properties, onViewStock, extendedPrices = {}, session = "closed" }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("value");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [openTagMenu, setOpenTagMenu] = useState<string | null>(null);
+  const tagMenuRef = useRef<HTMLDivElement>(null);
+  const { tags, setTag } = useHoldingTags();
+  const [filterStrategies, setFilterStrategies] = useState<Set<StrategyTag>>(new Set());
+  const [filterTypes, setFilterTypes] = useState<Set<string>>(new Set());
+
+  // Close tag menu when clicking outside
+  useEffect(() => {
+    if (!openTagMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (tagMenuRef.current && !tagMenuRef.current.contains(e.target as Node)) {
+        setOpenTagMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [openTagMenu]);
+
 
   const { aggHoldings, totalCash, totalInvested, totalCost, totalGainLoss, totalGainLossPct, totalDayChange, totalDayChangePct, virtualPortfolio } = useMemo(() => {
     const map = new Map<string, AggHolding>();
@@ -188,6 +216,25 @@ export default function MasterPortfolio({ portfolios, properties, onViewStock, e
   const isUp = totalGainLoss >= 0;
   const todayUp = totalDayChange >= 0;
 
+  const filtered = useMemo(() => {
+    return sorted.filter((h) => {
+      if (filterStrategies.size > 0) {
+        const tag = tags[h.symbol] ?? "none";
+        if (!filterStrategies.has(tag as StrategyTag)) return false;
+      }
+      if (filterTypes.size > 0 && !filterTypes.has(h.asset_type)) return false;
+      return true;
+    });
+  }, [sorted, filterStrategies, filterTypes, tags]);
+
+  const hasFilters = filterStrategies.size > 0 || filterTypes.size > 0;
+
+  function toggleSet<T>(set: Set<T>, val: T): Set<T> {
+    const next = new Set(set);
+    next.has(val) ? next.delete(val) : next.add(val);
+    return next;
+  }
+
   const SortBtn = ({ k, label }: { k: SortKey; label: string }) => (
     <button onClick={() => toggleSort(k)}
       className={`flex items-center gap-1 text-xs transition-colors ${sortKey === k ? "text-white" : "text-[#555] hover:text-[#8a8a8a]"}`}>
@@ -267,45 +314,146 @@ export default function MasterPortfolio({ portfolios, properties, onViewStock, e
               </div>
             );
           })()}
+
+          {/* Asset class breakdown */}
+          {aggHoldings.length > 0 && (() => {
+            const grandTotal = totalInvested + totalCash;
+            let stockVal = 0, etfVal = 0, cryptoVal = 0;
+            for (const h of aggHoldings) {
+              if (h.asset_type === "crypto") cryptoVal += h.current_value;
+              else if (h.asset_type === "etf" || h.asset_type === "mutual_fund") etfVal += h.current_value;
+              else stockVal += h.current_value;
+            }
+            const cashVal = totalCash;
+            const classes = [
+              { label: "Stocks", value: stockVal, color: "#00c805" },
+              { label: "ETFs / Funds", value: etfVal, color: "#4488ff" },
+              { label: "Crypto", value: cryptoVal, color: "#ff8800" },
+              { label: "Cash", value: cashVal, color: "#f7c44f" },
+            ].filter((c) => c.value > 0);
+            return (
+              <div className="mt-5 pt-5 border-t border-[#1f1f1f]">
+                <div className="text-[#555] text-xs mb-2">Asset class breakdown</div>
+                <div className="flex rounded-full overflow-hidden h-2 mb-3 bg-[#222]">
+                  {classes.map((c) => {
+                    const pct = grandTotal > 0 ? (c.value / grandTotal) * 100 : 0;
+                    return pct > 0.1 ? (
+                      <div key={c.label} className="h-2 transition-all"
+                        style={{ width: `${pct}%`, background: c.color }} />
+                    ) : null;
+                  })}
+                </div>
+                <div className="flex flex-wrap gap-x-6 gap-y-1.5">
+                  {classes.map((c) => {
+                    const pct = grandTotal > 0 ? (c.value / grandTotal) * 100 : 0;
+                    return (
+                      <div key={c.label} className="flex items-center gap-1.5">
+                        <div className="w-2 h-2 rounded-full shrink-0" style={{ background: c.color }} />
+                        <span className="text-[#8a8a8a] text-xs">{c.label}</span>
+                        <span className="text-white text-xs font-medium">{pct.toFixed(1)}%</span>
+                        <span className="text-[#555] text-xs">{fmtCompact(c.value)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <TotalChart
           portfolios={portfolios}
           totalValue={totalInvested + totalCash}
           totalTodayValue={totalDayChange}
+          totalGainLoss={totalGainLoss}
+          totalGainLossPct={totalGainLossPct}
         />
 
         <AllocationChart portfolios={portfolios} onViewStock={onViewStock} />
 
         <div className="flex gap-5 items-start">
-          {/* Left — Popi (stocks mode) */}
+          {/* Left — Popi */}
           <div className="w-[440px] shrink-0 sticky top-6">
             <PopiStocks />
           </div>
 
           {/* Centre — Holdings */}
           <div className="flex-1 min-w-0 space-y-5">
-            <div className="bg-[#141414] border border-[#2a2a2a] rounded-2xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-[#2a2a2a] flex items-center justify-between">
-                <div>
-                  <h2 className="text-white font-semibold">All Holdings</h2>
-                  <div className="text-[#555] text-xs mt-0.5">{aggHoldings.length} positions across {portfolios.length} portfolios</div>
+            <div className="bg-[#141414] border border-[#2a2a2a] rounded-2xl">
+              <div className="px-5 py-4 border-b border-[#2a2a2a] rounded-t-2xl space-y-3">
+                {/* Title + sort */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-white font-semibold">All Holdings</h2>
+                    <div className="text-[#555] text-xs mt-0.5">
+                      {filtered.length !== aggHoldings.length
+                        ? <>{filtered.length} of {aggHoldings.length} positions</>
+                        : <>{aggHoldings.length} positions across {portfolios.length} portfolios</>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-[#555]">
+                    Sort:
+                    <SortBtn k="value" label="Value" />
+                    <SortBtn k="gain_loss_pct" label="Return" />
+                    <SortBtn k="day_change" label="Today" />
+                    <SortBtn k="allocation" label="Alloc" />
+                    <SortBtn k="signal" label="Signal" />
+                  </div>
                 </div>
-                <div className="flex items-center gap-3 text-xs text-[#555]">
-                  Sort:
-                  <SortBtn k="value" label="Value" />
-                  <SortBtn k="gain_loss_pct" label="Return" />
-                  <SortBtn k="day_change" label="Today" />
-                  <SortBtn k="allocation" label="Alloc" />
-                  <SortBtn k="signal" label="Signal" />
+
+                {/* Filter bar */}
+                <div className="flex flex-wrap gap-y-2 gap-x-4 items-center">
+                  {/* Strategy */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[#444] text-[10px] uppercase tracking-wider">Strategy</span>
+                    {STRATEGY_TAGS.filter(t => t.id !== "none").map(t => (
+                      <button key={t.id}
+                        onClick={() => setFilterStrategies(s => toggleSet(s, t.id))}
+                        className="px-2 py-0.5 rounded-full text-[10px] font-medium transition-all"
+                        style={filterStrategies.has(t.id)
+                          ? { background: t.bg, color: t.color, border: `1px solid ${t.color}88` }
+                          : { background: "transparent", color: "#555", border: "1px solid #2a2a2a" }
+                        }
+                      >{t.short}</button>
+                    ))}
+                  </div>
+
+                  <div className="w-px h-4 bg-[#2a2a2a]" />
+
+                  {/* Asset type */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[#444] text-[10px] uppercase tracking-wider">Type</span>
+                    {ASSET_TYPE_FILTERS.map(t => (
+                      <button key={t.id}
+                        onClick={() => setFilterTypes(s => toggleSet(s, t.id))}
+                        className="px-2 py-0.5 rounded-full text-[10px] font-medium transition-all border"
+                        style={filterTypes.has(t.id)
+                          ? { background: "#1a2a1a", color: "#00c805", borderColor: "#00c80566" }
+                          : { background: "transparent", color: "#555", borderColor: "#2a2a2a" }
+                        }
+                      >{t.label}</button>
+                    ))}
+                  </div>
+
+                  {/* Clear */}
+                  {hasFilters && (
+                    <button
+                      onClick={() => { setFilterStrategies(new Set()); setFilterTypes(new Set()); }}
+                      className="flex items-center gap-1 text-[10px] text-[#555] hover:text-[#ff5000] transition-colors ml-auto"
+                    >
+                      <X size={10} /> Clear
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {sorted.length === 0 ? (
-                <div className="py-16 text-center text-[#555] text-sm">No holdings yet — add positions in your portfolios.</div>
+              {filtered.length === 0 ? (
+                <div className="py-16 text-center text-[#555] text-sm">
+                  {hasFilters ? "No holdings match these filters." : "No holdings yet — add positions in your portfolios."}
+                </div>
               ) : (
                 <div className="divide-y divide-[#1a1a1a]">
-                  {sorted.map((h) => {
+                  {filtered.map((h) => {
                     const alloc = totalInvested > 0 ? (h.current_value / totalInvested) * 100 : 0;
                     const up = h.gain_loss >= 0;
                     const dayUp = h.day_change_value >= 0;
@@ -385,8 +533,8 @@ export default function MasterPortfolio({ portfolios, properties, onViewStock, e
                             <div className="text-[#555] text-xs">{fmtQty(h.total_quantity)} shares</div>
                           </div>
 
-                          {/* Buy Target + signal (flex-1, fills remaining) */}
-                          <div className="flex-1 min-w-0">
+                          {/* Buy Target + signal */}
+                          <div className="w-28 shrink-0">
                             {bt?.base_buy_price && signalStyle ? (
                               <>
                                 <div className="text-[#8a8a8a] text-[10px]">Buy Target</div>
@@ -407,6 +555,40 @@ export default function MasterPortfolio({ portfolios, properties, onViewStock, e
                             )}
                           </div>
 
+                          {/* Strategy tag */}
+                          <div className="flex-1 min-w-0 relative" ref={openTagMenu === h.symbol ? tagMenuRef : undefined}>
+                            <div className="text-[#8a8a8a] text-[10px] mb-0.5">Strategy</div>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setOpenTagMenu(openTagMenu === h.symbol ? null : h.symbol); }}
+                              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-colors hover:opacity-80"
+                              style={{
+                                background: TAG_META[tags[h.symbol] ?? "none"].bg,
+                                color: TAG_META[tags[h.symbol] ?? "none"].color,
+                                border: `1px solid ${TAG_META[tags[h.symbol] ?? "none"].color}44`,
+                              }}
+                            >
+                              <span className="whitespace-nowrap">{TAG_META[tags[h.symbol] ?? "none"].short}</span>
+                              <ChevronDown size={10} className="shrink-0" />
+                            </button>
+                            {openTagMenu === h.symbol && (
+                              <div className="absolute top-full left-0 mt-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl shadow-2xl w-52 py-1" style={{ zIndex: 9999 }}>
+                                {STRATEGY_TAGS.map((t) => (
+                                  <button
+                                    key={t.id}
+                                    onClick={(e) => { e.stopPropagation(); setTag(h.symbol, t.id); setOpenTagMenu(null); }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-[#252525] transition-colors text-left"
+                                  >
+                                    <div className="w-2 h-2 rounded-full shrink-0" style={{ background: t.color }} />
+                                    <span className="text-xs text-white whitespace-nowrap">{t.label}</span>
+                                    {(tags[h.symbol] ?? "none") === t.id && (
+                                      <span className="ml-auto text-[10px]" style={{ color: t.color }}>✓</span>
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
                         </div>
                       </div>
                     );
@@ -416,10 +598,13 @@ export default function MasterPortfolio({ portfolios, properties, onViewStock, e
             </div>
           </div>
 
-          {/* Right — AI Price Target Analysis */}
+          {/* Right — Strategy Breakdown + AI Price Target Analysis */}
           {virtualPortfolio && (
             <div className="w-[420px] shrink-0 sticky top-6">
-              <BuyAnalysis portfolio={virtualPortfolio} onViewStock={onViewStock} />
+              <StrategyPieChart holdings={aggHoldings} tags={tags} />
+              <div className="mt-4">
+                <BuyAnalysis portfolio={virtualPortfolio} onViewStock={onViewStock} />
+              </div>
             </div>
           )}
         </div>
