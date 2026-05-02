@@ -1,6 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from typing import Optional
 import json
 import os
 import time
@@ -11,6 +13,12 @@ import pandas as pd
 from database import get_db
 from models import StockDataCache
 import price_poller
+
+try:
+    import anthropic as _anthropic_lib
+    HAS_ANTHROPIC = True
+except ImportError:
+    HAS_ANTHROPIC = False
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -264,6 +272,170 @@ def get_countries(symbols: str, db: Session = Depends(get_db)):
             result[sym] = None
 
     return result
+
+
+@router.get("/{symbol}/analyze")
+def analyze_stock(
+    symbol: str,
+    x_api_key: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Stream a full hedge-fund-style analysis of a stock using Claude."""
+    symbol = symbol.upper()
+
+    if not HAS_ANTHROPIC or not x_api_key:
+        return {"error": "Anthropic API key required"}
+
+    # Pull cached data for context
+    cached = db.query(StockDataCache).filter(StockDataCache.symbol == symbol).first()
+    stock_ctx = ""
+    if cached:
+        d = json.loads(cached.data)
+        info = d.get("yf_info", {})
+        profile = d.get("profile", {})
+        income = d.get("income_statement", [{}])
+        cf = d.get("cash_flow", [{}])
+        km = d.get("key_metrics", [{}])
+
+        name = profile.get("companyName") or info.get("longName") or symbol
+        sector = profile.get("sector") or info.get("sector", "")
+        mkt_cap = profile.get("mktCap") or info.get("marketCap")
+        desc = (profile.get("description") or info.get("longBusinessSummary") or "")[:600]
+        rev = income[0].get("revenue") if income else None
+        gross_margin = income[0].get("grossProfitRatio") if income else None
+        op_margin = income[0].get("operatingIncomeRatio") if income else None
+        net_margin = income[0].get("netIncomeRatio") if income else None
+        fcf = cf[0].get("freeCashFlow") if cf else None
+        roic = km[0].get("returnOnInvestedCapital") if km else None
+        pe = info.get("forwardPE") or info.get("trailingPE")
+        ev_ebitda = (km[0].get("evToEbitda") if km else None) or info.get("enterpriseToEbitda")
+        debt = info.get("totalDebt")
+        cash = info.get("totalCash")
+
+        def _fmt(v, prefix="$", suffix="", mult=1, pct=False):
+            if v is None: return "N/A"
+            v = v * mult
+            if pct: return f"{v*100:.1f}%"
+            if abs(v) >= 1e12: return f"{prefix}{v/1e12:.2f}T{suffix}"
+            if abs(v) >= 1e9:  return f"{prefix}{v/1e9:.2f}B{suffix}"
+            if abs(v) >= 1e6:  return f"{prefix}{v/1e6:.1f}M{suffix}"
+            return f"{prefix}{v:.2f}{suffix}"
+
+        stock_ctx = f"""
+Company: {name} ({symbol})
+Sector: {sector}
+Market Cap: {_fmt(mkt_cap)}
+Description: {desc}
+
+Key Financials (most recent annual):
+- Revenue: {_fmt(rev)}
+- Gross Margin: {_fmt(gross_margin, prefix='', pct=True)}
+- Operating Margin: {_fmt(op_margin, prefix='', pct=True)}
+- Net Margin: {_fmt(net_margin, prefix='', pct=True)}
+- Free Cash Flow: {_fmt(fcf)}
+- ROIC: {_fmt(roic, prefix='', pct=True)}
+- Total Debt: {_fmt(debt)}
+- Cash: {_fmt(cash)}
+
+Valuation:
+- Forward P/E: {f"{pe:.1f}x" if pe else "N/A"}
+- EV/EBITDA: {f"{ev_ebitda:.1f}x" if ev_ebitda else "N/A"}
+"""
+    else:
+        stock_ctx = f"Company: {symbol} (no cached financial data available — rely on your training knowledge)"
+
+    today = datetime.utcnow().strftime("%B %d, %Y")
+    prompt = f"""Today's date is {today}. You are analyzing this company as of right now. Do not reference any prior date or training cutoff — treat all analysis as current through {today}.
+
+Act as a top-tier hedge fund analyst. Produce a comprehensive, data-driven investment analysis of {symbol}.
+
+Here is the available financial data to inform your analysis:
+{stock_ctx}
+
+Your goal is to determine:
+1. Whether this is a high-quality business
+2. Whether it is a good investment at the current price
+3. Whether it has long-term compounding potential
+
+Be analytical, structured, and concise. Avoid generic statements. Focus on insights, not descriptions. Quantify wherever possible.
+
+---
+
+### 1. Business Overview
+- Core business model and segments
+- Key products/services
+- Revenue breakdown by segment and geography
+
+### 2. Industry & Market Structure
+- TAM, growth rate, and key drivers
+- Competitive positioning and Porter's Five Forces
+- Cyclicality and macro sensitivity
+
+### 3. Revenue Model & Unit Economics
+- Revenue streams and pricing power
+- Gross, operating, and net margins
+- Incremental margins and operating leverage
+
+### 4. Financial Analysis
+- Revenue growth (historical + forward expectations)
+- Free cash flow generation and quality
+- Balance sheet health (debt, liquidity, dilution risk)
+
+### 5. Earnings Quality
+- Cash flow vs net income consistency
+- One-time items or accounting red flags
+- Stock-based compensation impact
+
+### 6. Competitive Advantage (Moat)
+- Type of moat and its durability over 5–10 years
+- Whether moat is strengthening or weakening
+
+### 7. Management & Capital Allocation
+- Leadership quality and execution track record
+- Capital allocation (reinvestment, buybacks, M&A)
+- ROIC vs WACC
+
+### 8. Growth Drivers
+- Near-term (1–2 years) catalysts
+- Long-term (5–10 years) secular drivers
+
+### 9. Risks
+- Key business, financial, and macro risks
+- What could break the thesis
+
+### 10. Market Perception vs Reality
+- What is likely misunderstood or mispriced
+- Where potential alpha exists
+
+### 11. Valuation
+- Relative valuation (P/E, EV/EBITDA, P/S vs peers)
+- DCF implied assumptions
+- Whether current valuation is justified
+
+### 12. Scenario Analysis
+Bull / Base / Bear cases with revenue assumptions, margin assumptions, multiples, and implied price targets.
+
+### 13. Final Investment Thesis
+- Clear recommendation: BUY / HOLD / AVOID
+- Price target range and time horizon
+- Top 3 reasons to invest
+- Top 3 reasons not to invest
+"""
+
+    def stream():
+        try:
+            client = _anthropic_lib.Anthropic(api_key=x_api_key)
+            with client.messages.stream(
+                model="claude-opus-4-5",
+                max_tokens=4000,
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    yield text
+        except Exception as e:
+            yield f"\n\n**Error:** {str(e)}"
+
+    return StreamingResponse(stream(), media_type="text/plain")
 
 
 @router.get("/{symbol}")

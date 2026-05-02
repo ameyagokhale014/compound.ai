@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
-import { ArrowLeft, ExternalLink, RefreshCw, ChevronDown, ChevronUp, Zap } from "lucide-react";
+import { ArrowLeft, ExternalLink, RefreshCw, ChevronDown, ChevronUp, Zap, BrainCircuit, X } from "lucide-react";
 import {
   ComposedChart, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, ReferenceLine, CartesianGrid,
 } from "recharts";
 import type { Portfolio } from "../types";
-import { getStockData, getStockPriceHistory, getSignals } from "../api";
+import { getStockData, getStockPriceHistory, getSignals, streamStockAnalysis } from "../api";
 import type { SignalsResponse, TechnicalSignal } from "../api";
 import { useBuyTargets } from "../hooks/useBuyTargets";
 import Popi from "../components/Popi";
@@ -451,6 +451,198 @@ function SignalCard({ signal }: { signal: TechnicalSignal }) {
   );
 }
 
+// ── Analysis visual dashboard ──────────────────────────────────────────────────
+function AnalysisDashboard({ data }: { data: any }) {
+  const info       = data?.yf_info || {};
+  const profile    = data?.profile || {};
+  const income     = (data?.income_statement || []).slice(0, 6).reverse();
+  const cashflow   = (data?.cash_flow || []).slice(0, 6).reverse();
+  const keyMetrics = (data?.key_metrics || []).slice(0, 6).reverse();
+
+  function yr(d: string) { return d ? d.slice(0, 4) : ""; }
+  function fmtB(v: number | null) {
+    if (!v) return "—";
+    const a = Math.abs(v);
+    if (a >= 1e12) return `$${(v / 1e12).toFixed(1)}T`;
+    if (a >= 1e9)  return `$${(v / 1e9).toFixed(1)}B`;
+    if (a >= 1e6)  return `$${(v / 1e6).toFixed(0)}M`;
+    return `$${v.toFixed(0)}`;
+  }
+  function fmtX(v: number | null) { return v ? `${v.toFixed(1)}x` : "—"; }
+  function fmtPct(v: number | null) { return v != null ? `${(v * 100).toFixed(1)}%` : "—"; }
+
+  const revenueData  = income.map((r: any) => ({ year: yr(r.date), value: r.revenue ? r.revenue / 1e9 : null })).filter((d: any) => d.value);
+  const marginData   = income.map((r: any) => ({
+    year: yr(r.date),
+    gross: r.grossProfitRatio  != null ? +(r.grossProfitRatio  * 100).toFixed(1) : null,
+    op:    r.operatingIncomeRatio != null ? +(r.operatingIncomeRatio * 100).toFixed(1) : null,
+    net:   r.netIncomeRatio    != null ? +(r.netIncomeRatio    * 100).toFixed(1) : null,
+  })).filter((d: any) => d.gross != null);
+  const fcfData      = cashflow.map((r: any) => ({ year: yr(r.date), value: r.freeCashFlow ? r.freeCashFlow / 1e9 : null })).filter((d: any) => d.value != null);
+  const roicData     = keyMetrics.map((r: any) => ({ year: yr(r.date), value: r.returnOnInvestedCapital != null ? +(r.returnOnInvestedCapital * 100).toFixed(1) : null })).filter((d: any) => d.value != null);
+
+  const pe        = info.forwardPE || info.trailingPE;
+  const evEbitda  = keyMetrics.at(-1)?.evToEbitda ?? info.enterpriseToEbitda;
+  const grossM    = income.at(-1)?.grossProfitRatio;
+  const opM       = income.at(-1)?.operatingIncomeRatio;
+  const netM      = income.at(-1)?.netIncomeRatio;
+  const fcfLatest = cashflow.at(-1)?.freeCashFlow;
+  const roicLatest = keyMetrics.at(-1)?.returnOnInvestedCapital;
+  const mktCap    = profile.mktCap || info.marketCap;
+  const debtToEq  = info.debtToEquity;
+
+  const statCards = [
+    { label: "P/E", value: fmtX(pe) },
+    { label: "EV/EBITDA", value: fmtX(evEbitda) },
+    { label: "Gross Margin", value: fmtPct(grossM) },
+    { label: "Op Margin", value: fmtPct(opM) },
+    { label: "Net Margin", value: fmtPct(netM) },
+    { label: "FCF", value: fmtB(fcfLatest) },
+    { label: "ROIC", value: fmtPct(roicLatest) },
+    { label: "Debt/Equity", value: debtToEq ? `${debtToEq.toFixed(1)}%` : "—" },
+  ];
+
+  const MiniLabel = ({ label }: { label: string }) => (
+    <div className="text-[#555] text-[10px] uppercase tracking-wider mb-2">{label}</div>
+  );
+
+  const CustomBar = ({ x, y, width, height, value }: any) => {
+    const fill = value < 0 ? "#ff5000" : "#4f8ef7";
+    return <rect x={x} y={y} width={width} height={height} fill={fill} rx={2} />;
+  };
+
+  return (
+    <div className="space-y-4 mb-6 pb-6 border-b border-[#1f1f1f]">
+      {/* Key ratio pill strip */}
+      <div className="grid grid-cols-4 gap-2">
+        {statCards.map(s => (
+          <div key={s.label} className="bg-[#141414] border border-[#2a2a2a] rounded-xl px-3 py-2">
+            <div className="text-[#555] text-[10px] mb-0.5">{s.label}</div>
+            <div className="text-white font-semibold text-sm">{s.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Revenue + FCF side by side */}
+      <div className="grid grid-cols-2 gap-3">
+        {revenueData.length > 1 && (
+          <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-3">
+            <MiniLabel label="Revenue ($B)" />
+            <ResponsiveContainer width="100%" height={110}>
+              <BarChart data={revenueData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                <XAxis dataKey="year" tick={{ fill: "#555", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: "#555", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8, fontSize: 11 }}
+                  formatter={(v: any) => [`$${Number(v).toFixed(1)}B`, "Revenue"]} />
+                <Bar dataKey="value" fill="#4f8ef7" radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {fcfData.length > 1 && (
+          <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-3">
+            <MiniLabel label="Free Cash Flow ($B)" />
+            <ResponsiveContainer width="100%" height={110}>
+              <BarChart data={fcfData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                <XAxis dataKey="year" tick={{ fill: "#555", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: "#555", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8, fontSize: 11 }}
+                  formatter={(v: any) => [`$${Number(v).toFixed(1)}B`, "FCF"]} />
+                <Bar dataKey="value" shape={<CustomBar />} radius={[2, 2, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+
+      {/* Margins over time */}
+      {marginData.length > 1 && (
+        <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-3">
+          <MiniLabel label="Margin Trends (%)" />
+          <ResponsiveContainer width="100%" height={120}>
+            <LineChart data={marginData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <XAxis dataKey="year" tick={{ fill: "#555", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: "#555", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8, fontSize: 11 }}
+                formatter={(v: any, name: string) => [`${v}%`, name === "gross" ? "Gross" : name === "op" ? "Operating" : "Net"]} />
+              <ReferenceLine y={0} stroke="#333" strokeDasharray="3 3" />
+              <Line type="monotone" dataKey="gross" stroke="#00c805" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="op"    stroke="#f7c44f" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="net"   stroke="#a78bfa" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="flex gap-4 mt-1">
+            {[{ color: "#00c805", label: "Gross" }, { color: "#f7c44f", label: "Operating" }, { color: "#a78bfa", label: "Net" }].map(l => (
+              <div key={l.label} className="flex items-center gap-1">
+                <div className="w-2.5 h-0.5 rounded-full" style={{ background: l.color }} />
+                <span className="text-[10px] text-[#555]">{l.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ROIC */}
+      {roicData.length > 1 && (
+        <div className="bg-[#141414] border border-[#2a2a2a] rounded-xl p-3">
+          <MiniLabel label="ROIC (%)" />
+          <ResponsiveContainer width="100%" height={90}>
+            <LineChart data={roicData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <XAxis dataKey="year" tick={{ fill: "#555", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill: "#555", fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 8, fontSize: 11 }}
+                formatter={(v: any) => [`${v}%`, "ROIC"]} />
+              <ReferenceLine y={0} stroke="#333" strokeDasharray="3 3" />
+              <Line type="monotone" dataKey="value" stroke="#f7c44f" strokeWidth={2} dot={{ fill: "#f7c44f", r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Markdown renderer for analysis ────────────────────────────────────────────
+function AnalysisMarkdown({ text }: { text: string }) {
+  const lines = text.split("\n");
+  return (
+    <div className="space-y-1 text-sm">
+      {lines.map((line, i) => {
+        if (line.startsWith("### ")) return (
+          <h3 key={i} className="text-white font-semibold text-sm mt-5 mb-1 pt-4 border-t border-[#1f1f1f] first:border-0 first:pt-0 first:mt-0">
+            {line.slice(4)}
+          </h3>
+        );
+        if (line.startsWith("## ")) return (
+          <h2 key={i} className="text-white font-bold text-base mt-6 mb-2">{line.slice(3)}</h2>
+        );
+        if (line.startsWith("**") && line.endsWith("**")) return (
+          <p key={i} className="text-white font-semibold mt-2">{line.slice(2, -2)}</p>
+        );
+        if (line.startsWith("* ") || line.startsWith("- ")) {
+          const content = line.slice(2);
+          const parts = content.split(/\*\*(.*?)\*\*/g);
+          return (
+            <div key={i} className="flex gap-2 text-[#8a8a8a] leading-relaxed">
+              <span className="text-[#444] shrink-0 mt-0.5">•</span>
+              <span>{parts.map((p, j) => j % 2 === 1 ? <strong key={j} className="text-white font-semibold">{p}</strong> : p)}</span>
+            </div>
+          );
+        }
+        if (line.startsWith("---")) return <div key={i} className="border-t border-[#1f1f1f] my-3" />;
+        if (!line.trim()) return <div key={i} className="h-1" />;
+        const parts = line.split(/\*\*(.*?)\*\*/g);
+        return (
+          <p key={i} className="text-[#8a8a8a] leading-relaxed">
+            {parts.map((p, j) => j % 2 === 1 ? <strong key={j} className="text-white font-semibold">{p}</strong> : p)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 export default function StockPage({ symbol, onBack, portfolios }: Props) {
   const [data, setData] = useState<any>(null);
@@ -460,6 +652,9 @@ export default function StockPage({ symbol, onBack, portfolios }: Props) {
   const [signalsLoading, setSignalsLoading] = useState(true);
   const [signalInsightLoading, setSignalInsightLoading] = useState(false);
   const [aboutExpanded, setAboutExpanded] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [analysisText, setAnalysisText] = useState("");
+  const [analysisLoading, setAnalysisLoading] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -491,6 +686,16 @@ export default function StockPage({ symbol, onBack, portfolios }: Props) {
     getStockData(symbol, true)
       .then(setData)
       .finally(() => setRefreshing(false));
+  };
+
+  const handleAnalyze = () => {
+    setAnalysisOpen(true);
+    if (analysisText) return; // already fetched
+    setAnalysisText("");
+    setAnalysisLoading(true);
+    streamStockAnalysis(symbol, (chunk) => {
+      setAnalysisText((prev) => prev + chunk);
+    }).finally(() => setAnalysisLoading(false));
   };
 
   const buyTargets = useBuyTargets([symbol]);
@@ -637,6 +842,13 @@ export default function StockPage({ symbol, onBack, portfolios }: Props) {
                   </div>
                 </div>
               )}
+              <button
+                onClick={handleAnalyze}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1a1020] border border-[#a78bfa33] text-[#a78bfa] hover:bg-[#251535] hover:border-[#a78bfa66] transition-all text-xs font-medium mt-0.5"
+              >
+                <BrainCircuit size={13} />
+                Deep Analysis
+              </button>
               <button onClick={handleRefresh} disabled={refreshing}
                 className="text-[#555] hover:text-white transition-colors mt-1 disabled:opacity-40">
                 <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
@@ -1075,6 +1287,60 @@ export default function StockPage({ symbol, onBack, portfolios }: Props) {
           </div>
         </div>
       </div>
+
+      {/* ── Deep Analysis Drawer ── */}
+      {analysisOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Backdrop */}
+          <div className="flex-1 bg-black/60" onClick={() => setAnalysisOpen(false)} />
+
+          {/* Panel */}
+          <div className="w-[680px] max-w-full h-full bg-[#0f0f0f] border-l border-[#2a2a2a] flex flex-col shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[#1f1f1f] shrink-0">
+              <div className="flex items-center gap-2.5">
+                <BrainCircuit size={16} className="text-[#a78bfa]" />
+                <span className="text-white font-semibold">Deep Analysis</span>
+                <span className="text-[#555] text-xs">· {symbol} · Hedge Fund View</span>
+              </div>
+              <div className="flex items-center gap-3">
+                {analysisText && !analysisLoading && (
+                  <button
+                    onClick={() => { setAnalysisText(""); handleAnalyze(); }}
+                    className="text-[#555] hover:text-[#a78bfa] text-xs transition-colors"
+                  >
+                    Regenerate
+                  </button>
+                )}
+                <button onClick={() => setAnalysisOpen(false)} className="text-[#555] hover:text-white transition-colors">
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {/* Charts always visible once data loaded */}
+              {data && <AnalysisDashboard data={data} />}
+
+              {analysisLoading && !analysisText && (
+                <div className="flex flex-col items-center justify-center h-40 gap-3">
+                  <div className="w-6 h-6 border-2 border-[#a78bfa] border-t-transparent rounded-full animate-spin" />
+                  <div className="text-[#555] text-sm">Generating analysis for {symbol}…</div>
+                  <div className="text-[#333] text-xs">This takes 20–40 seconds</div>
+                </div>
+              )}
+              {analysisText && <AnalysisMarkdown text={analysisText} />}
+              {analysisLoading && analysisText && (
+                <div className="flex items-center gap-2 mt-3 text-[#555] text-xs">
+                  <div className="w-3 h-3 border border-[#a78bfa] border-t-transparent rounded-full animate-spin" />
+                  Writing…
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -150,6 +150,27 @@ export const getStockCountries = (symbols: string[]) =>
 export const getMarketCaps = (symbols: string[]) =>
   api.get<Record<string, number | null>>("/stocks/market-caps", { params: { symbols: symbols.join(",") } }).then((r) => r.data);
 
+export async function streamStockAnalysis(
+  symbol: string,
+  onChunk: (text: string) => void,
+): Promise<void> {
+  const apiKey = localStorage.getItem("anthropic_api_key") ?? "";
+  const res = await fetch(`http://localhost:8000/stocks/${symbol}/analyze`, {
+    headers: {
+      "X-Api-Key": apiKey,
+      Authorization: `Bearer ${localStorage.getItem("auth_token") ?? ""}`,
+    },
+  });
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    onChunk(decoder.decode(value, { stream: true }));
+  }
+}
+
 export const getWatchlist = () =>
   api.get<import("./types").WatchlistItem[]>("/watchlist/").then((r) => r.data);
 
